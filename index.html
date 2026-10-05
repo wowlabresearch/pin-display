@@ -205,7 +205,7 @@
 
     /* mode 1: range map | pin heights | controls, all one screen */
     .tof-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(280px,340px);gap:32px;
-      height:calc(100dvh - 186px);min-height:540px;padding-bottom:12px;}
+      height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
     .tof-sense,.tof-servo{min-height:0;}
     .tof-sense .tof-frame,.tof-servo .pin-grid{width:min(100%, calc(100dvh - 300px));}
     .tof-ctrl{display:flex;flex-direction:column;gap:16px;min-height:0;overflow-y:auto;padding-right:2px;}
@@ -213,10 +213,9 @@
     .tof-ctrl .stat-value{font-size:40px;}
     .tof-ctrl .preset-row .btn{font-size:10px;}
     .tof-ctrl #calSection{padding-bottom:0;}
-    body.wide .page-footer{min-height:40px;}
 
     .tilt-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:32px;
-      height:calc(100dvh - 186px);min-height:540px;padding-bottom:12px;}
+      height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
     .tilt-sense{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:16px;min-height:0;
       --lvl:clamp(180px, 30vh, 290px);}
     .tilt-sense-main{display:grid;grid-template-columns:var(--lvl) minmax(0,1fr);gap:24px;align-items:start;}
@@ -620,11 +619,6 @@
       </div>
     </div>
   </section>
-
-  <footer class="page-footer">
-    <span>ESP32-S3 · 4 × 4 SCOTCH-YOKE</span>
-    <span id="footerRight">WS :81 <i></i> SELECT MODE</span>
-  </footer>
 </main>
 
 <script>
@@ -886,15 +880,13 @@
   // without the device.
   var views = { 0: document.getElementById('viewHome'), 1: document.getElementById('viewTof'), 2: document.getElementById('viewTilt') };
   var calSection = document.getElementById('calSection');
-  var calHome = calSection.nextElementSibling;  // the footer -- where calSection returns to
+  var calHome = calSection.parentNode;  // <main> -- calSection returns to its end on the landing page
   var backBtn = document.getElementById('backBtn');
-  var footerRight = document.getElementById('footerRight');
   var modeTofBtn = document.getElementById('modeTofBtn');
   var modeTiltBtn = document.getElementById('modeTiltBtn');
   var tofTag = document.getElementById('tofTag');
   var homeNote = document.getElementById('homeNote');
   var currentMode = 0;
-  var FOOTER = { 0: 'SELECT MODE', 1: 'TOF 15 HZ', 2: 'TILT 30 HZ' };
 
   function showView(m){
     if (!views[m]) return;
@@ -903,7 +895,6 @@
     for (var k in views) views[k].hidden = (+k !== m);
     calSection.hidden = (m === 0);
     backBtn.hidden = (m === 0);
-    footerRight.innerHTML = 'WS :81 <i></i> ' + FOOTER[m];
     // Desktop layouts for every page (landing tiles, .tof-layout,
     // .tilt-layout); 'wide' only does anything inside the >=1024px media query.
     document.body.classList.add('wide');
@@ -912,7 +903,7 @@
     var calTarget = m === 2 ? document.getElementById('tiltServoCol') :
                     m === 1 ? document.getElementById('tofCtrlCol') : null;
     if (calTarget && calSection.parentNode !== calTarget) calTarget.appendChild(calSection);
-    else if (!calTarget && calSection.parentNode !== calHome.parentNode) calHome.parentNode.insertBefore(calSection, calHome);
+    else if (!calTarget && calSection.parentNode !== calHome) calHome.appendChild(calSection);
     if (m === 2){
       resizeGraph();  // canvas had 0 width while its view was hidden
       renderLink();   // hub vs controller panel (may also hide calibration)
