@@ -274,6 +274,8 @@
   .cam-frame{position:relative;width:100%;aspect-ratio:4 / 3;overflow:hidden;border:1px solid var(--line);background:#1a1a1a;}
   .cam-frame video,.cam-frame img{display:block;width:100%;height:100%;object-fit:cover;}
   .cam-frame iframe{display:block;width:100%;height:100%;border:0;background:#1a1a1a;}
+  /* left-right flip, on both the hub preview and the phone's live view */
+  .cam-frame.mirrored iframe,.cam-frame.mirrored video,.cam-frame.mirrored img{transform:scaleX(-1);}
 
   .preset-row{margin-top:12px;}
   .preset-row .btn{min-height:38px;padding:0 6px;font-size:11px;}
@@ -730,6 +732,7 @@
       <div class="btnrow">
         <button class="btn" id="camBtn" type="button">Share webcam with phone</button>
         <button class="btn" id="vdoBtn" type="button">Stream via VDO.Ninja</button>
+        <button class="btn" id="mirrorBtn" type="button">Mirror: ON</button>
       </div>
       <span class="hub-status" id="vdoNote">VDO.Ninja = real video across any network (free, no sign-up), shown right in the phone's LIVE VIEW.</span>
       <!-- alternative live view: a Google Meet the phone opens itself -->
@@ -1860,7 +1863,7 @@
   }, 1000);
 
   function sendHubState(){
-    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0, meet: meetUrl || '', vdo: vdoId || '' });
+    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0, meet: meetUrl || '', vdo: vdoId || '', mirror: camMirror ? 1 : 0 });
   }
   setInterval(sendHubState, 1000);
 
@@ -1895,6 +1898,7 @@
     lastHubMsgAt = performance.now();
     hubEspLinked = !!msg.esp;
     showMeetLink(msg.meet || '');
+    if (msg.mirror !== undefined && !!msg.mirror !== camMirror){ camMirror = !!msg.mirror; applyMirror(); }
     showVdo(msg.vdo || '');
     setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
       (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'), hubEspLinked ? 'ok' : 'bad');
@@ -2164,7 +2168,10 @@
     if (camStream) stopCam();
     vdoId = 'pd26' + (hubCode || 'x') + Math.random().toString(36).slice(2, 10);
     // push: pick the webcam and start at once, no mic, minimal UI
-    vdoHubFrame = makeFrame('https://vdo.ninja/?push=' + vdoId + '&webcam&autostart&audiodevice=0&cleanoutput');
+    // quality=2 (360p) + 30fps: pins don't need detail, and fewer pixels means
+    // less encode/transfer/decode time on every hop
+    vdoHubFrame = makeFrame('https://vdo.ninja/?push=' + vdoId + '&webcam&autostart&audiodevice=0&cleanoutput&quality=2&maxframerate=30');
+    applyMirror();
     camHubFrame.appendChild(vdoHubFrame);
     renderCamHub();
     sendHubState();
@@ -2177,6 +2184,25 @@
   }
   vdoBtn.addEventListener('click', function(){ if (vdoId) stopVdo(); else startVdo(); });
 
+  // Mirror (left-right flip). Set on the hub, passed to the phone in the hub
+  // state, applied as a CSS flip to every live-view frame -- works the same for
+  // VDO.Ninja, the built-in video and the relay snapshots. Default on.
+  var mirrorBtn = document.getElementById('mirrorBtn');
+  var camMirror = true;
+  try { var savedMirror = localStorage.getItem('pdCamMirror'); if (savedMirror !== null) camMirror = savedMirror === '1'; } catch (e) {}
+  function applyMirror(){
+    camHubFrame.classList.toggle('mirrored', camMirror);
+    camVideo.parentNode.classList.toggle('mirrored', camMirror);
+    mirrorBtn.textContent = 'Mirror: ' + (camMirror ? 'ON' : 'OFF');
+  }
+  mirrorBtn.addEventListener('click', function(){
+    camMirror = !camMirror;
+    try { localStorage.setItem('pdCamMirror', camMirror ? '1' : '0'); } catch (e) {}
+    applyMirror();
+    sendHubState();
+  });
+  applyMirror();
+
   // Phone side: show (or drop) the hub's VDO.Ninja stream in LIVE VIEW.
   function showVdo(id){
     id = VDO_ID_RE.test(id) ? id : '';
@@ -2184,7 +2210,10 @@
     if (vdoViewFrame){ vdoViewFrame.remove(); vdoViewFrame = null; }
     vdoViewId = id || null;
     if (!id){ if (!camVideo.srcObject && camImg.hidden) camView.hidden = true; return; }
-    vdoViewFrame = makeFrame('https://vdo.ninja/?view=' + id + '&cleanoutput&noaudio&autoplay');
+    // buffer=0: smallest jitter buffer (Chromium honours it); h264 decodes in
+    // hardware on iPhone
+    vdoViewFrame = makeFrame('https://vdo.ninja/?view=' + id + '&cleanoutput&noaudio&autoplay&buffer=0&codec=h264');
+    applyMirror();
     camVideo.hidden = true; camImg.hidden = true;
     camVideo.parentNode.appendChild(vdoViewFrame);
     camVia.textContent = 'LIVE VIDEO · VDO.NINJA';
