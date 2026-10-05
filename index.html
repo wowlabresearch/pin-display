@@ -263,6 +263,12 @@
     .tilt-servo.has-cam .cam-hub .cam-frame{width:min(100%, calc((50dvh - 200px) * 4 / 3));margin-inline:auto;}
   }
 
+  /* Google Meet link sharing */
+  .meet-row{display:flex;gap:10px;}
+  .meet-input{font-size:13px;letter-spacing:0;text-transform:none;}
+  .meet-view{display:flex;flex-direction:column;gap:10px;}
+  .meet-open{display:flex;align-items:center;justify-content:center;text-decoration:none;}
+
   /* webcam live view */
   .cam-view,.cam-hub{display:flex;flex-direction:column;gap:10px;}
   .cam-frame{position:relative;width:100%;aspect-ratio:4 / 3;overflow:hidden;border:1px solid var(--line);background:#1a1a1a;}
@@ -604,6 +610,16 @@
       </div>
     </div>
 
+    <!-- controller phone: the hub shared a Google Meet link for the live view -->
+    <div class="meet-view o1" id="meetView" hidden>
+      <div class="matrix-heading">
+        <span>LIVE VIEW · GOOGLE MEET</span>
+        <span>VIDEO CALL</span>
+      </div>
+      <a class="btn primary meet-open" id="meetOpen" href="#" target="_blank" rel="noopener">Open Google Meet</a>
+      <span class="hub-status">iPhone pauses this page's tilt sensor while Meet is in front -- turn on picture-in-picture in Meet and come back here, or watch Meet on another device.</span>
+    </div>
+
     <div class="tilt-sense-main">
     <div class="tilt-level-wrap o2">
       <div class="matrix-heading">
@@ -711,6 +727,13 @@
         <video id="camPreview" playsinline muted autoplay></video>
       </div>
       <button class="btn" id="camBtn" type="button">Share webcam with phone</button>
+      <!-- alternative live view: a Google Meet the phone opens itself -->
+      <div class="meet-row">
+        <input class="join-input meet-input" id="meetInput" type="url" inputmode="url" autocomplete="off"
+               placeholder="https://meet.google.com/xxx-xxxx-xxx" aria-label="Google Meet link to share with the phone">
+        <button class="btn" id="meetBtn" type="button">Share link</button>
+      </div>
+      <span class="hub-status" id="meetStatus">Or start a Google Meet with this webcam and share its link.</span>
     </div>
    </div>
   </section>
@@ -1636,7 +1659,7 @@
   function relayLink(client, topicOut, minIntervalMs){
     var last = 0;
     return {
-      kind: 'relay', open: true,
+      kind: 'relay', open: true, client: client,
       send: function(msg){
         if (!this.open) return;
         var now = performance.now();
@@ -1783,34 +1806,42 @@
   // Hub also listens on the relay topic for its room, so a phone that can't
   // reach it directly still gets through.
   var hubRelay = null, relayPhone = null, relayPhoneSeenAt = 0;
+  // The hub listens on EVERY relay broker at once, so a phone always finds
+  // it even if one side had to fail over to the backup broker. Replies go
+  // back on whichever broker the phone is actually using.
   function startHubRelay(code){
     if (hubRelay) return;
-    hubRelay = 'pending';
-    connectRelay(function(client){
-      hubRelay = client;
-      var base = RELAY_TOPIC + code;
-      client.subscribe(base + '/up');
-      client.on('message', function(topic, payload){
-        var msg;
-        try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
-        // a live direct link wins; relay stragglers (e.g. right after the
-        // phone upgraded to direct) must not pull the hub back onto the relay
-        if (phoneConn && phoneConn.open && phoneConn.kind === 'direct') return;
-        relayPhoneSeenAt = performance.now();
-        if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone){
-          // a relayed phone takes over, same as a new direct one would
-          if (phoneConn && phoneConn !== relayPhone) { try { phoneConn.close(); } catch (e) {} }
-          relayPhone = relayLink(client, base + '/down', 200);  // pins to phone at ~5Hz
-          phoneConn = relayPhone;
-          setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
-          if (currentMode !== 2) selectMode(2);
-          sendHubState();
-          offerCamToPhone();
-        }
-        if (msg.t === 'camAck') onSnapAck(msg.id);
-        if (msg.t === 'tilt') onPhoneData(msg);
+    hubRelay = [];
+    var base = RELAY_TOPIC + code;
+    loadScript(MQTT_URL).then(function(){
+      RELAY_BROKERS.forEach(function(url){
+        var client = mqtt.connect(url, { clientId: 'pd26h-' + Math.random().toString(36).slice(2, 10),
+          clean: true, connectTimeout: 5000, reconnectPeriod: 3000 });
+        hubRelay.push(client);
+        client.on('connect', function(){ client.subscribe(base + '/up'); });
+        client.on('error', function(){});  // keeps retrying; other broker covers meanwhile
+        client.on('message', function(topic, payload){
+          var msg;
+          try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+          // a live direct link wins; relay stragglers (e.g. right after the
+          // phone upgraded to direct) must not pull the hub back onto the relay
+          if (phoneConn && phoneConn.open && phoneConn.kind === 'direct') return;
+          relayPhoneSeenAt = performance.now();
+          if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone || relayPhone.client !== client){
+            // a relayed phone takes over, same as a new direct one would
+            if (phoneConn && phoneConn !== relayPhone) { try { phoneConn.close(); } catch (e) {} }
+            relayPhone = relayLink(client, base + '/down', 200);  // pins to phone at ~5Hz
+            phoneConn = relayPhone;
+            setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
+            if (currentMode !== 2) selectMode(2);
+            sendHubState();
+            offerCamToPhone();
+          }
+          if (msg.t === 'camAck') onSnapAck(msg.id);
+          if (msg.t === 'tilt') onPhoneData(msg);
+        });
       });
-    }, function(){ hubRelay = null; });  // relay unreachable: direct links still work
+    }).catch(function(){ hubRelay = null; });  // relay unreachable: direct links still work
   }
   // relayed phones have no "close" event -- time them out instead
   setInterval(function(){
@@ -1824,7 +1855,7 @@
   }, 1000);
 
   function sendHubState(){
-    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0 });
+    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0, meet: meetUrl || '' });
   }
   setInterval(sendHubState, 1000);
 
@@ -1858,6 +1889,7 @@
     if (msg.t !== 'hub') return;
     lastHubMsgAt = performance.now();
     hubEspLinked = !!msg.esp;
+    showMeetLink(msg.meet || '');
     setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
       (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'), hubEspLinked ? 'ok' : 'bad');
     renderStatus();
@@ -2067,7 +2099,7 @@
   }
 
   function sendSnapshot(){
-    if (!camStream || !relayPhone || !relayPhone.open || phoneConn !== relayPhone || !hubRelay || !hubRelay.publish) return;
+    if (!camStream || !relayPhone || !relayPhone.open || phoneConn !== relayPhone) return;
     if (!camPreview.videoWidth) return;
     var now = performance.now(), timeout = snapAckTimeout(), inFlight = 0;
     for (var k in snapPending){ if (now - snapPending[k] > timeout) delete snapPending[k]; else inFlight++; }  // lost -> forget
@@ -2078,7 +2110,7 @@
     snapId = (snapId + 1) % 100000;
     snapPending[snapId] = now; snapLastSentAt = now;
     // "id|rtt|dataURL": the phone acks the id and shows the last round trip
-    hubRelay.publish(RELAY_TOPIC + hubCode + '/cam',
+    relayPhone.client.publish(RELAY_TOPIC + hubCode + '/cam',
       snapId + '|' + Math.round(snapRtt / 2) + '|' + camCanvas.toDataURL('image/jpeg', SNAP_QUALITY), { qos: 0 });  // one-way estimate
   }
   function onSnapAck(id){
@@ -2099,6 +2131,53 @@
     camVia.textContent = 'LIVE VIDEO';
     camView.hidden = false;
   }
+  /* ---------- Google Meet link: hub shares, phone opens ---------- */
+  // Meet can't be embedded (it refuses iframes), so the hub just passes the
+  // link along in its regular {"t":"hub"} state message and the phone shows
+  // an "Open Google Meet" button. Only plain https links are accepted on both
+  // ends -- the relay is a public broker, so never trust what arrives.
+  var meetInput = document.getElementById('meetInput');
+  var meetBtn = document.getElementById('meetBtn');
+  var meetStatus = document.getElementById('meetStatus');
+  var meetView = document.getElementById('meetView');
+  var meetOpen = document.getElementById('meetOpen');
+  var meetUrl = '';
+
+  function safeHttpsUrl(s){
+    try {
+      var u = new URL(String(s || '').trim());
+      return u.protocol === 'https:' ? u.href : '';
+    } catch (e) { return ''; }
+  }
+
+  function setMeetUrl(s){
+    meetUrl = safeHttpsUrl(s);
+    try { localStorage.setItem('pdMeetUrl', meetUrl); } catch (e) {}
+    meetInput.value = meetUrl;
+    meetBtn.textContent = meetUrl ? 'Stop sharing' : 'Share link';
+    meetStatus.textContent = meetUrl
+      ? (/^https:\/\/meet\.google\.com\//.test(meetUrl) ? 'Google Meet link shared with the phone.' : 'Link shared with the phone.')
+      : 'Or start a Google Meet with this webcam and share its link.';
+    meetStatus.classList.toggle('ok', !!meetUrl);
+    sendHubState();
+  }
+  meetBtn.addEventListener('click', function(){
+    if (meetUrl){ setMeetUrl(''); return; }
+    var v = safeHttpsUrl(meetInput.value);
+    if (!v){ meetStatus.textContent = 'Paste an https:// link (e.g. https://meet.google.com/abc-defg-hij)'; meetStatus.classList.add('bad'); return; }
+    meetStatus.classList.remove('bad');
+    setMeetUrl(v);
+  });
+  meetInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') meetBtn.click(); });
+  try { var savedMeet = localStorage.getItem('pdMeetUrl'); if (savedMeet) { meetUrl = safeHttpsUrl(savedMeet); meetInput.value = meetUrl; if (meetUrl) meetBtn.textContent = 'Stop sharing'; } } catch (e) {}
+
+  // Phone side
+  function showMeetLink(s){
+    var u = safeHttpsUrl(s);
+    meetView.hidden = !u;
+    if (u && meetOpen.getAttribute('href') !== u) meetOpen.setAttribute('href', u);
+  }
+
   // Direct video: ask the receiver for the smallest jitter buffer it allows
   // (Chrome/Edge honour these; Safari ignores them), and report whether the
   // call ended up on a TURN relay server -- that, not the code, is the usual
