@@ -102,6 +102,19 @@
   .cal-steps{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;
     color:var(--muted);font-size:12px;line-height:1.6;}
   .cal-steps strong{color:var(--ink);font-weight:500;}
+  /* tap-action switch + direction-reverse marks */
+  .seg{display:flex;margin:0 0 10px;border:1px solid var(--line);background:rgb(255 255 255 / 55%);}
+  .seg-btn{flex:1;min-height:38px;padding:0 8px;border:0;background:transparent;color:var(--muted);
+    font-size:12px;font-weight:500;cursor:pointer;}
+  .seg-btn + .seg-btn{border-left:1px solid var(--line);}
+  .seg-btn.active{background:var(--acc);color:var(--ink);}
+  .seg-btn:focus-visible{outline:2px solid var(--ink);outline-offset:-2px;}
+  .cal-grid.rev-mode .cal-cell{border-style:dashed;}
+  .cal-rev{position:absolute;left:6px;bottom:6px;padding:1px 5px;background:var(--ink);color:#fff;
+    font-size:9px;font-weight:600;letter-spacing:.04em;}
+  .cal-cell:not(.is-rev) .cal-rev{display:none;}
+  .inv-list{margin:0;color:var(--ink);font-size:13px;line-height:1.6;}
+  .link-btn{padding:0;border:0;background:none;color:var(--bad);font:inherit;text-decoration:underline;cursor:pointer;}
   .cal-side{display:flex;flex-direction:column;gap:18px;}
   .cal-cell{position:relative;aspect-ratio:1;overflow:hidden;padding:0;border:1px solid var(--line);
     background:#f7f8f4;color:var(--ink);cursor:pointer;font:10px var(--mono);
@@ -671,8 +684,13 @@
     <section class="visual-layout cal-layout">
       <div class="cal-main">
         <div class="matrix-heading">
-          <span>SERVO GRID · TAP TO SWEEP</span>
+          <span>SERVO GRID</span>
           <span id="calStatus">ALL AT 0°</span>
+        </div>
+        <!-- what a tap on a servo does -->
+        <div class="seg" id="calTapSeg" role="group" aria-label="Tap action">
+          <button class="seg-btn active" type="button" data-tap="sweep">Tap = sweep 0 → 180 → 0°</button>
+          <button class="seg-btn" type="button" data-tap="reverse">Tap = reverse direction</button>
         </div>
         <div class="cal-grid" id="calGrid"></div>
       </div>
@@ -689,7 +707,15 @@
           <li>Every servo is parked at raw 0° — each pin should sit at <strong>0 mm</strong>.</li>
           <li>Tap a servo in the grid to sweep just that one 0 → 180 → 0°.</li>
           <li>A dot marks the servos you've checked. If a pin isn't at 0 mm at 0°, re-seat its horn.</li>
+          <li>If a servo runs backwards (pin up at 0°), switch to <strong>Tap = reverse direction</strong> and tap it. Saved on this ESP32.</li>
         </ol>
+        <div class="inv-block">
+          <div class="matrix-heading">
+            <span>REVERSED SERVOS</span>
+            <button class="link-btn" id="invClearBtn" type="button">Reset all</button>
+          </div>
+          <p class="inv-list" id="calInvList">None</p>
+        </div>
         <div class="btnrow">
           <button class="btn" id="zeroBtn" type="button">All to 0°</button>
           <button class="btn primary" id="calExitBtn" type="button">Exit calibration</button>
@@ -860,14 +886,44 @@
       cell.type = 'button';
       cell.className = 'cal-cell';
       cell.innerHTML = '<span class="cal-fill"></span><span class="cal-label">R' + r + 'C' + c +
-        ' · ' + i + '</span><span class="cal-angle">0°</span>';
+        ' · ' + i + '</span><span class="cal-angle">0°</span><span class="cal-rev">REV</span>';
       cell.addEventListener('click', (function(pin){
-        return function(){ wsSend({ sweep: pin }); };
+        return function(){
+          if (calTapMode === 'reverse') wsSend({ inv: [pin, isInv(pin) ? 0 : 1] });
+          else wsSend({ sweep: pin });
+        };
       })(i));
       calGrid.appendChild(cell);
       calCells.push(cell);
     }
   }
+
+  /* per-servo direction reverse -- the ESP32 owns the list (NVS) and
+     broadcasts {"inv":[pins]}; this page only renders it and toggles. */
+  var invPins = [];
+  var calTapMode = 'sweep';  // what tapping a servo does: 'sweep' | 'reverse'
+  var calTapSeg = document.getElementById('calTapSeg');
+  var calInvList = document.getElementById('calInvList');
+  var invClearBtn = document.getElementById('invClearBtn');
+
+  function isInv(pin){ return invPins.indexOf(pin) >= 0; }
+
+  function renderInv(){
+    for (var i = 0; i < calCells.length; i++) calCells[i].classList.toggle('is-rev', isInv(i));
+    calInvList.textContent = invPins.length ? invPins.map(function(p){
+      return 'R' + Math.floor(p / gridCols) + 'C' + (p % gridCols) + ' · ' + p;
+    }).join(',  ') : 'None';
+    invClearBtn.hidden = !invPins.length;
+  }
+
+  calTapSeg.addEventListener('click', function(e){
+    var b = e.target.closest('.seg-btn');
+    if (!b) return;
+    calTapMode = b.dataset.tap;
+    Array.prototype.forEach.call(calTapSeg.children, function(x){ x.classList.toggle('active', x === b); });
+    calGrid.classList.toggle('rev-mode', calTapMode === 'reverse');
+  });
+  invClearBtn.addEventListener('click', function(){ wsSend({ invClear: 1 }); });
 
   function setCellAngle(pin, deg){
     var cell = calCells[pin];
@@ -914,6 +970,7 @@
       // window changed (by this or another page) -- don't fight an active drag
       if (!winDragging){ tofNear = msg.near; tofFar = msg.far; renderWindow(); }
     }
+    if (msg.inv){ invPins = msg.inv; renderInv(); }  // after any grid rebuild above
     // Calibration first: while it's on, the calibration page owns the screen
     // regardless of the firmware's underlying mode.
     if (msg.cal !== undefined){
