@@ -403,6 +403,9 @@
       .tilt-side{padding-top:20px;gap:8px;}
       .tilt-side .stat-value{font-size:32px;}
       .tilt-side .btn{min-height:38px;}
+      .tilt-side .resp-row .stat-row{min-height:0;gap:4px;padding-bottom:6px;}
+      .tilt-side .readout-footer{min-height:0;}
+      #angleGraph,#accelGraph{height:80px;}
     }
 
     /* calibration page: big servo grid | readout + steps + buttons */
@@ -607,6 +610,14 @@
       <button class="btn" id="tareBtn" type="button">Set level</button>
     </div>
 
+    <!-- how hard the pins chase the phone: ESP32 spring stiffness, saved on the board -->
+    <div class="resp-row o5" id="respRow">
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Response · water ↔ instant</span><strong><span id="respVal">70</span></strong></span>
+        <input type="range" id="respSlider" min="0" max="100" step="1" value="70">
+      </label>
+    </div>
+
     <div class="fallback o6" id="fallbackPanel">
       <label class="stat-row">
         <span class="stat-row-head"><span>Roll</span><strong><span id="rollVal">0</span>°</strong></span>
@@ -750,7 +761,7 @@
   var smRoll = 0, smPitch = 0;
   var tareRoll = 0, tarePitch = 0;
   var lastSendAt = 0;
-  var SEND_INTERVAL_MS = 33; // ~30Hz -- plenty for a 60Hz physics loop on the ESP32 side
+  var SEND_INTERVAL_MS = 20; // ~50Hz -- keeps link latency small next to the ESP32's 60Hz loop
 
   function connectWS(){
     // An HTTPS-hosted page (the phone-link setup) can't open ws:// at all
@@ -971,6 +982,7 @@
       if (!winDragging){ tofNear = msg.near; tofFar = msg.far; renderWindow(); }
     }
     if (msg.inv){ invPins = msg.inv; renderInv(); }  // after any grid rebuild above
+    if (msg.resp !== undefined && !respDragging) renderResp(msg.resp);
     // Calibration first: while it's on, the calibration page owns the screen
     // regardless of the firmware's underlying mode.
     if (msg.cal !== undefined){
@@ -1435,18 +1447,17 @@
     requestAnimationFrame(graphLoop);
   }
   requestAnimationFrame(graphLoop);
-  // Light smoothing only -- same light-touch ratio used throughout the
-  // LUCKY DRAW project: enough to tame raw sensor jitter without adding
-  // noticeable lag (the ESP32-side spring in config.h is what supplies the
-  // deliberate "water" lag on top of this).
+  // Light 50/50 smoothing only -- just enough to tame raw sensor jitter
+  // (~1 sample of lag). Any deliberate "water" lag comes from the ESP32's
+  // spring, set by the RESPONSE slider.
   function onOrientation(e){
     if (e.beta === null || e.gamma === null) return;
     sensorActive = true;
     lastOrientationAt = performance.now();
     var a = e.alpha || 0;
     curX = e.beta; curY = e.gamma; curZ = a > 180 ? a - 360 : a;
-    smRoll = smRoll * 0.75 + (e.gamma || 0) * 0.25;
-    smPitch = smPitch * 0.75 + (e.beta || 0) * 0.25;
+    smRoll = smRoll * 0.5 + (e.gamma || 0) * 0.5;
+    smPitch = smPitch * 0.5 + (e.beta || 0) * 0.5;
     sendTilt(smRoll - tareRoll, smPitch - tarePitch);
   }
 
@@ -1510,6 +1521,29 @@
   rollSlider.addEventListener('input', onSlider);
   pitchSlider.addEventListener('input', onSlider);
 
+  /* ---------- tilt response slider ({"resp":0..100} -> ESP32 spring) ---------- */
+  var respRow = document.getElementById('respRow');
+  var respSlider = document.getElementById('respSlider');
+  var respVal = document.getElementById('respVal');
+  var respDragging = false, respTimer = null, lastRespSentAt = 0;
+
+  function respLabel(v){ return v >= 100 ? '100 · instant' : v <= 15 ? v + ' · water' : String(v); }
+  function renderResp(v){ respSlider.value = v; respVal.textContent = respLabel(+v); }
+
+  function sendResp(){
+    clearTimeout(respTimer);
+    var wait = 80 - (performance.now() - lastRespSentAt);
+    if (wait > 0){ respTimer = setTimeout(sendResp, wait); return; }
+    lastRespSentAt = performance.now();
+    wsSend({ resp: +respSlider.value });
+  }
+  respSlider.addEventListener('input', function(){
+    respDragging = true;
+    respVal.textContent = respLabel(+respSlider.value);
+    sendResp();
+  });
+  respSlider.addEventListener('change', function(){ respDragging = false; sendResp(); });
+
   /* ---------- phone link: laptop HUB <-> iPhone CONTROLLER (PeerJS) ---------- */
   // Same pattern as LUCKY DRAW: WebRTC data channel brokered by PeerJS's free
   // public signaling server -- no server of our own, no ESP32 Wi-Fi. The device
@@ -1564,6 +1598,8 @@
     hubBlock.hidden = !hub;
     ctrlBlock.hidden = hub;
     linkRoleEl.textContent = hub ? 'HUB · SPECTATOR' : 'CONTROLLER';
+    // response is an ESP32 setting -- only the device wired to it can change it
+    respRow.hidden = !hub;
     if (hub) startHub();
   }
 
