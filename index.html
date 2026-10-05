@@ -3,26 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#eef1e9">
+<meta name="theme-color" content="#f2f2f0">
 <title>PIN DISPLAY</title>
+<!-- Inter, loaded non-blocking: on the ESP32's offline AP page this simply
+     fails and the system sans takes over, without holding up first paint. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap"
+      media="print" onload="this.media='all'">
 <style>
-  /* Visual language matches the ToF Field p5js-visualizer. No web fonts here:
-     in AP mode there's no internet, so the stacks fall back to system faces. */
+  /* Visual language: light paper + neon-yellow glows, light-weight Inter,
+     hairline boxes (InteractionSensing'26 deck style). Token names are kept
+     from the earlier palette so every rule below still resolves:
+     --green = solid/dark, --coral = accent mark, --teal = "ok". */
   :root{
     color-scheme: light;
-    --paper:#eef1e9; --ink:#1b2823; --muted:#748078; --line:#cbd2c8;
-    --green:#1b6252; --coral:#ed7054; --yellow:#f2d777; --teal:#34a891;
-    --mono:"DM Mono",ui-monospace,Menlo,Consolas,monospace;
-    --display:"Space Grotesk",-apple-system,"Trebuchet MS",sans-serif;
+    --paper:#f2f2f0; --ink:#202020; --muted:#8a8a86; --line:#c6c6c2;
+    --acc:#f4ef1f; --acc-deep:#d9d200; --acc-soft:#f8f5a0; --bad:#b4430a;
+    --green:#202020; --coral:#f4ef1f; --yellow:#f8f5a0; --teal:#202020;
+    --mono:"Inter",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    --display:"Inter",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;min-height:100%;}
   body{
     color:var(--ink);
     background-color:var(--paper);
-    background-image:radial-gradient(#cbd2c8 0.65px, transparent 0.65px);
-    background-size:18px 18px;
+    /* soft yellow glows like the deck's tiles, fixed so they don't scroll */
+    background-image:
+      radial-gradient(70% 60% at 100% 100%, rgb(244 239 31 / 55%), transparent 70%),
+      radial-gradient(45% 40% at 92% 0%, rgb(244 239 31 / 30%), transparent 70%),
+      linear-gradient(115deg, #f2f2f0 0%, #fbfbf8 45%, #f2f2f0 100%);
+    background-attachment:fixed;
     font-family:var(--display);
+    font-feature-settings:"tnum" 1;
     overscroll-behavior:none;-webkit-user-select:none;user-select:none;
   }
   button{font:inherit;}
@@ -252,6 +266,73 @@
     padding-bottom:env(safe-area-inset-bottom, 0px);}
   .page-footer i{width:4px;height:4px;display:inline-block;margin:0 7px 2px;border-radius:50%;background:var(--coral);}
 
+  /* ================= theme layer (deck style) =================
+     Overrides the structural rules above: hairlines, translucent white
+     tiles with yellow corner glow, light-weight type, yellow as the one
+     accent, ink for everything that must read. */
+  .tile,.mode-card,.link-hub,.link-ctrl,.graph-wrap{
+    border:1px solid var(--line);
+    background:radial-gradient(120% 120% at 100% 100%, rgb(244 239 31 / 32%), transparent 55%), rgb(255 255 255 / 55%);
+  }
+  .eyebrow,.matrix-heading,.page-footer{font-size:11px;letter-spacing:.01em;font-weight:400;}
+  .eyebrow span{color:var(--muted);}
+  h1{font-weight:300;letter-spacing:-.035em;font-size:clamp(40px, 11vw, 64px);line-height:1;}
+  .title-period{color:var(--acc-deep);}
+  .wordmark{font-weight:500;letter-spacing:.02em;}
+  .wordmark-mark{background:var(--acc);color:var(--ink);font:500 11px var(--display);letter-spacing:0;}
+  .connection-state{font-size:11px;letter-spacing:0;}
+  .state-dot{background:#c9c9c5;}
+  .connection-state.is-connected .state-dot{background:var(--acc);box-shadow:0 0 0 1px var(--ink), 0 0 0 5px rgb(244 239 31 / 35%);}
+
+  .btn{border-color:var(--line);background:rgb(255 255 255 / 60%);font-weight:500;}
+  .btn:active{background:var(--acc-soft);}
+  .btn.primary,.usb-btn{border:1px solid var(--acc-deep);color:var(--ink);background:var(--acc);}
+  .btn.primary:active,.usb-btn:active{background:var(--acc-deep);}
+  .usb-btn{font-weight:500;}
+  .usb-btn.on{color:var(--ink);background:transparent;border:1px solid var(--ink);}
+  .btn.active,.preset-row .btn.active{border-color:var(--ink);color:var(--ink);background:var(--acc);}
+  .btn:focus-visible,.cal-cell:focus-visible,.mode-card:focus-visible{outline:2px solid var(--ink);}
+  .back-btn{background:rgb(255 255 255 / 60%);}
+  .back-btn:active{background:var(--acc-soft);}
+
+  .mode-card:active{border-color:var(--ink);}
+  .mode-num{background:var(--ink);color:#fff;font:500 12px var(--display);}
+  .mode-title{font-weight:400;font-size:22px;letter-spacing:-.02em;}
+  .mode-tag{font-size:10px;letter-spacing:.02em;background:rgb(255 255 255 / 70%);}
+  .mode-tag.ok{border-color:var(--ink);color:var(--ink);background:var(--acc);}
+  .mode-tag.bad{border-color:var(--bad);color:var(--bad);}
+
+  .level{background:radial-gradient(90% 90% at 100% 100%, rgb(244 239 31 / 35%), transparent 60%), rgb(255 255 255 / 55%);}
+  .level-ring{border-color:#bdbdb8;}
+  .bubble{background:var(--acc);box-shadow:0 0 0 1.5px var(--ink), 0 0 22px 6px rgb(244 239 31 / 55%);}
+  .stat-value{font-weight:300;letter-spacing:-.03em;}
+  .stat-unit{font-size:10px;}
+
+  .pin-cell,.cal-cell{background:rgb(255 255 255 / 60%);}
+  .pin-fill,.cal-fill{background:linear-gradient(to top, var(--acc) 0%, var(--acc-soft) 100%);}
+  .pin-val{font-size:12px;}
+  .cal-cell.is-sweeping{border-color:var(--ink);}
+  .cal-cell.is-done{border-color:var(--acc-deep);}
+  .cal-cell.is-done::after{background:var(--ink);}
+
+  .tof-frame{background:rgb(255 255 255 / 55%);}
+  .tof-cell{background:#e7e7e3;border-color:rgb(242 242 240 / 90%);font-size:10px;}
+  .empty-state{background:rgb(242 242 240 / 82%);}
+  .empty-mark{border-color:var(--line);color:var(--ink);}
+  .legend-scale{background:linear-gradient(90deg, #f4ef1f, #f8f5a0 35%, #a0a09b);}
+  .legend-window,.legend-note-mark{border-color:var(--ink);}
+
+  .hub-qr{background:#fff;}
+  .hub-code{font-weight:400;letter-spacing:.14em;}
+  .hub-status.ok{color:var(--ink);font-weight:500;}
+  .hub-status.bad,.mode-tag.bad{color:var(--bad);}
+  .join-input{font-weight:400;}
+  .join-input:focus{outline-color:var(--ink);}
+  input[type=range]{accent-color:var(--ink);}
+
+  .readout-footer-mark{background:var(--acc);box-shadow:0 0 0 1px var(--ink);}
+  .page-footer i{background:var(--acc-deep);}
+
   @keyframes arrive{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
   @media (prefers-reduced-motion: reduce){
     *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important;}
@@ -459,9 +540,9 @@
       </div>
       <div class="graph-wrap">
         <div class="graph-legend">
-          <span><i class="sw" style="background:#ed7054"></i>X <strong id="xVal">--</strong></span>
-          <span><i class="sw" style="background:#1b6252"></i>Y <strong id="yVal">--</strong></span>
-          <span><i class="sw" style="background:#3b6fd4"></i>Z <strong id="zVal">--</strong></span>
+          <span><i class="sw" style="background:#202020"></i>X <strong id="xVal">--</strong></span>
+          <span><i class="sw" style="background:#d9d200"></i>Y <strong id="yVal">--</strong></span>
+          <span><i class="sw" style="background:#9a9a96"></i>Z <strong id="zVal">--</strong></span>
           <span class="graph-hint">deg</span>
         </div>
         <canvas id="angleGraph" height="140"></canvas>
@@ -906,13 +987,13 @@
     if (tofOk === false) tofEmptyLabel.textContent = 'ToF sensor not found · check wiring and reboot the ESP32';
   }
 
-  // Same coral -> yellow -> teal ramp and 200-4000mm span as the ToF
-  // visualizer -- independent of the narrower pin window.
-  var RAMP = [[237,112,84],[242,215,119],[52,168,145]];
+  // Near = vivid yellow -> pale yellow -> far = grey (deck palette), over the
+  // 200-4000mm span -- independent of the narrower pin window.
+  var RAMP = [[244,239,31],[248,245,160],[160,160,155]];
   function distanceColor(d){
     var t = Math.max(0, Math.min(1, (d - visNear) / (visFar - visNear)));
     var a, b, u;
-    if (t < 0.52){ a = RAMP[0]; b = RAMP[1]; u = t / 0.52; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.52) / 0.48; }
+    if (t < 0.35){ a = RAMP[0]; b = RAMP[1]; u = t / 0.35; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.35) / 0.65; }
     return 'rgb(' + Math.round(a[0] + (b[0]-a[0])*u) + ',' + Math.round(a[1] + (b[1]-a[1])*u) + ',' + Math.round(a[2] + (b[2]-a[2])*u) + ')';
   }
 
@@ -1093,7 +1174,7 @@
     graphCtx.clearRect(0, 0, w, h);
     // grid: 0 solid, +/-90 dashed
     graphCtx.lineWidth = dpr;
-    graphCtx.strokeStyle = '#cbd2c8';
+    graphCtx.strokeStyle = '#d0d0cc';
     graphCtx.beginPath(); graphCtx.moveTo(0, midY); graphCtx.lineTo(w, midY); graphCtx.stroke();
     graphCtx.setLineDash([4 * dpr, 4 * dpr]);
     [90, -90].forEach(function(v){
@@ -1101,7 +1182,7 @@
       graphCtx.beginPath(); graphCtx.moveTo(0, y); graphCtx.lineTo(w, y); graphCtx.stroke();
     });
     graphCtx.setLineDash([]);
-    graphCtx.fillStyle = '#748078';
+    graphCtx.fillStyle = '#8a8a86';
     graphCtx.font = (9 * dpr) + 'px ui-monospace, Menlo, monospace';
     graphCtx.fillText('+90', 4 * dpr, midY - midY / 2 - 3 * dpr);
     graphCtx.fillText('-90', 4 * dpr, midY + midY / 2 - 3 * dpr);
@@ -1122,12 +1203,12 @@
       }
       graphCtx.stroke();
     }
-    trace(graphBuf.x, '#ed7054');
-    trace(graphBuf.y, '#1b6252');
-    trace(graphBuf.z, '#3b6fd4');
+    trace(graphBuf.x, '#202020');
+    trace(graphBuf.y, '#d9d200');
+    trace(graphBuf.z, '#9a9a96');
 
     if (sensorActive && performance.now() - lastOrientationAt > 500){
-      graphCtx.fillStyle = '#ed7054';
+      graphCtx.fillStyle = '#b4430a';
       graphCtx.font = '600 ' + (11 * dpr) + 'px ui-monospace, Menlo, monospace';
       graphCtx.fillText('SIGNAL LOST', w - 80 * dpr, 16 * dpr);
     }
@@ -1302,7 +1383,7 @@
       hubQr.innerHTML = '';
       if (hosted){
         loadScript(QR_URL).then(function(){
-          new QRCode(hubQr, { text: url, width: 200, height: 200, colorDark: '#1b2823', colorLight: '#ffffff' });
+          new QRCode(hubQr, { text: url, width: 200, height: 200, colorDark: '#202020', colorLight: '#ffffff' });
         }).catch(function(){ hubQr.textContent = 'QR unavailable'; });
       } else {
         hubQr.textContent = 'NO HTTPS';
