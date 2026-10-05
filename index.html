@@ -218,7 +218,7 @@
 
     .tilt-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:32px;
       height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
-    .tilt-sense{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:16px;min-height:0;
+    .tilt-sense{display:grid;grid-template-rows:auto auto auto;align-content:start;gap:16px;min-height:0;
       --lvl:clamp(150px, 22vh, 250px);}
     .tilt-sense-main{display:grid;grid-template-columns:var(--lvl) minmax(0,1fr);gap:24px;align-items:start;}
     .tilt-level-wrap .level{width:var(--lvl);margin:0;}
@@ -228,13 +228,14 @@
     /* the two charts split the leftover height of the left column */
     /* side by side, so each chart gets the full leftover height */
     .tilt-graph{min-height:0;gap:16px;flex-direction:row;}
-    .graph-block{flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:120px;}
+    .graph-block{flex:1 1 0;min-width:0;display:flex;flex-direction:column;}
     .graph-block .graph-legend{gap:10px;}
-    .graph-block .graph-wrap{flex:1;display:flex;flex-direction:column;min-height:0;}
+    .graph-block .graph-wrap{display:flex;flex-direction:column;}
     /* never let the charts overlap: on very short screens the left column
        scrolls on its own instead (page itself still doesn't) */
     .tilt-sense{overflow-y:auto;padding-right:2px;}
-    #angleGraph,#accelGraph{flex:1 1 0;height:auto;min-height:0;}
+    /* fixed plot height (about half the old fill-the-column height) */
+    #angleGraph,#accelGraph{flex:none;height:clamp(80px, 15vh, 160px);}
 
     .link-hub,.link-ctrl{padding:10px 12px;}
     .hub-qr{width:92px;height:92px;flex-basis:92px;}
