@@ -1197,7 +1197,7 @@
     document.getElementById('legendNear').textContent = tofNear + ' mm';
     document.getElementById('legendFar').textContent = tofFar + ' mm';
     document.getElementById('legendWindow').hidden = true;
-    document.getElementById('legendNote').textContent = 'COLORS = PIN WINDOW ' + tofNear + ' – ' + tofFar + ' MM · BEYOND FAR = FADED';
+    document.getElementById('legendNote').textContent = 'COLORS = PIN WINDOW ' + tofNear + ' – ' + tofFar + ' MM · BEYOND FAR = DARKER';
     if (lastTofDist) paintTofCells(lastTofDist);  // recolor right away when a slider moves
   }
 
@@ -1261,12 +1261,12 @@
   // stretched over the current PIN WINDOW (Near = coral, Far = teal), so the
   // whole ramp is spent on the distances that actually move the pins -- narrow
   // the window and small depth differences become clearly different colors.
-  // Closer than Near stays full coral; beyond Far is a faded teal (it's outside
-  // the window: those pins are fully down).
+  // Closer than Near stays full coral; beyond Far is a deeper teal than the
+  // ramp's end, so out-of-window zones (pins fully down) read as "past max".
   var RAMP = [[237,112,84],[242,215,119],[52,168,145]];
   var lastTofDist = null;
   function distanceColor(d){
-    if (d > tofFar) return 'rgba(52,168,145,0.32)';
+    if (d > tofFar) return 'rgb(24,104,88)';
     var t = Math.max(0, Math.min(1, (d - tofNear) / Math.max(1, tofFar - tofNear)));
     var a, b, u;
     if (t < 0.52){ a = RAMP[0]; b = RAMP[1]; u = t / 0.52; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.52) / 0.48; }
@@ -1282,9 +1282,11 @@
         valid++;
         if (d < nearest) nearest = d;
         tofCells[i].style.background = distanceColor(d);
+        tofCells[i].style.color = d > tofFar ? '#fff' : '';  // readable on the deep teal
         tofCells[i].textContent = d;
       } else {
         tofCells[i].style.background = '';
+        tofCells[i].style.color = '';
         tofCells[i].textContent = '';
       }
     }
