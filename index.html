@@ -1554,6 +1554,65 @@
   var PEER_PREFIX = 'pindisplay26-';
   var PEERJS_URL = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';
   var QR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+
+  // Fallback relay for when phone and laptop are on different networks and
+  // WebRTC can't punch through (cellular CGNAT, school/office firewalls --
+  // PeerJS's own TURN is UDP:3478 only and often blocked). Messages then go
+  // phone -> public MQTT broker (secure WebSocket) -> laptop, which gets
+  // through nearly anything a web page can. Same JSON messages as the direct
+  // link, just rate-limited. Topics: <RELAY_TOPIC><CODE>/up (phone->hub) and
+  // /down (hub->phone). Public broker = no auth: fine for tilt data, but
+  // anyone who knows a room code could publish to it.
+  var MQTT_URL = 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';
+  var RELAY_BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
+  var RELAY_TOPIC = 'pindisplay26/rooms/';
+  var DIRECT_TIMEOUT_MS = 6000;   // no direct link by then -> use the relay
+  // Optional dedicated TURN servers (e.g. from metered.ca) for faster direct
+  // links across networks; empty = PeerJS defaults.
+  var TURN_SERVERS = [];
+  function peerOpts(){
+    var o = { debug: 1 };
+    if (TURN_SERVERS.length) o.config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }].concat(TURN_SERVERS) };
+    return o;
+  }
+
+  // Connect to the first reachable relay broker.
+  function connectRelay(onReady, onFail){
+    loadScript(MQTT_URL).then(function(){
+      var i = 0;
+      (function tryNext(){
+        if (i >= RELAY_BROKERS.length){ onFail(); return; }
+        var url = RELAY_BROKERS[i++];
+        var client = mqtt.connect(url, { clientId: 'pd26-' + Math.random().toString(36).slice(2, 10),
+          clean: true, connectTimeout: 5000, reconnectPeriod: 2000 });
+        var settled = false;
+        function fail(){ if (settled) return; settled = true; try { client.end(true); } catch (e) {} tryNext(); }
+        client.on('connect', function(){ if (settled) return; settled = true; onReady(client); });
+        client.on('error', fail);
+        setTimeout(fail, 6000);
+      })();
+    }).catch(onFail);
+  }
+
+  // Wrap a relay topic so it looks like a PeerJS DataConnection (open/send/
+  // close) to the rest of the code. Streams (tilt/pins) are rate-limited to
+  // be polite to the public broker; one-off messages always go through.
+  function relayLink(client, topicOut, minIntervalMs){
+    var last = 0;
+    return {
+      kind: 'relay', open: true,
+      send: function(msg){
+        if (!this.open) return;
+        var now = performance.now();
+        if (msg.t === 'tilt' || msg.t === 'pins'){
+          if (now - last < minIntervalMs) return;
+          last = now;
+        }
+        client.publish(topicOut, JSON.stringify(msg), { qos: 0 });
+      },
+      close: function(){ this.open = false; }
+    };
+  }
   var linkRoleEl = document.getElementById('linkRole');
   var hubBlock = document.getElementById('hubBlock');
   var hubCodeEl = document.getElementById('hubCode');
@@ -1628,10 +1687,11 @@
   }
 
   function openHubPeer(code){
-    var peer = new Peer(PEER_PREFIX + code, { debug: 1 });
+    var peer = new Peer(PEER_PREFIX + code, peerOpts());
     hubPeer = peer;
     peer.on('open', function(){
       hubCode = code;
+      startHubRelay(code);
       try { sessionStorage.setItem('pdHubCode', code); } catch (e) {}
       hubCodeEl.textContent = code;
       var url = joinUrl(code);
@@ -1651,8 +1711,9 @@
       // One controller at a time -- a new phone replaces the old one.
       if (phoneConn && phoneConn !== conn) { try { phoneConn.close(); } catch (e) {} }
       phoneConn = conn;
+      conn.kind = 'direct';
       conn.on('open', function(){
-        setLinkStatus(hubStatus, 'Phone connected', 'ok');
+        setLinkStatus(hubStatus, 'Phone connected · DIRECT', 'ok');
         if (currentMode !== 2) selectMode(2);
         sendHubState();
       });
@@ -1681,6 +1742,44 @@
     });
   }
 
+  // Hub also listens on the relay topic for its room, so a phone that can't
+  // reach it directly still gets through.
+  var hubRelay = null, relayPhone = null, relayPhoneSeenAt = 0;
+  function startHubRelay(code){
+    if (hubRelay) return;
+    hubRelay = 'pending';
+    connectRelay(function(client){
+      hubRelay = client;
+      var base = RELAY_TOPIC + code;
+      client.subscribe(base + '/up');
+      client.on('message', function(topic, payload){
+        var msg;
+        try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+        relayPhoneSeenAt = performance.now();
+        if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone){
+          // a relayed phone takes over, same as a new direct one would
+          if (phoneConn && phoneConn !== relayPhone) { try { phoneConn.close(); } catch (e) {} }
+          relayPhone = relayLink(client, base + '/down', 200);  // pins to phone at ~5Hz
+          phoneConn = relayPhone;
+          setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
+          if (currentMode !== 2) selectMode(2);
+          sendHubState();
+        }
+        if (msg.t === 'tilt') onPhoneData(msg);
+      });
+    }, function(){ hubRelay = null; });  // relay unreachable: direct links still work
+  }
+  // relayed phones have no "close" event -- time them out instead
+  setInterval(function(){
+    if (relayPhone && relayPhone.open && performance.now() - relayPhoneSeenAt > 5000){
+      relayPhone.close();
+      if (phoneConn === relayPhone){
+        phoneConn = null;
+        setLinkStatus(hubStatus, 'Phone disconnected · waiting…', 'bad');
+      }
+    }
+  }, 1000);
+
   function sendHubState(){
     if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0 });
   }
@@ -1699,40 +1798,65 @@
   setInterval(function(){
     phoneRate = phoneMsgs; phoneMsgs = 0;
     if (phoneConn && phoneConn.open){
-      setLinkStatus(hubStatus, phoneRate ? 'Phone streaming · ' + phoneRate + ' Hz → ESP32' :
-        'Phone connected · tap Start sensor on the phone', 'ok');
+      var via = phoneConn.kind === 'relay' ? ' · RELAY' : ' · DIRECT';
+      setLinkStatus(hubStatus, phoneRate ? 'Phone streaming · ' + phoneRate + ' Hz → ESP32' + via :
+        'Phone connected' + via + ' · tap Start sensor on the phone', 'ok');
     }
   }, 1000);
 
-  // Controller side: join the laptop's room.
+  // Controller side: join the laptop's room -- direct WebRTC first, relay if
+  // that can't connect (different networks behind strict NAT/firewalls).
+  var ctrlRelay = null, joinAttempt = 0, lastHubMsgAt = 0;
+
+  function onHubMsg(msg, code, via){
+    if (!msg) return;
+    if (msg.t === 'pins'){ onTiltPins(msg.h); return; }
+    if (msg.t !== 'hub') return;
+    lastHubMsgAt = performance.now();
+    hubEspLinked = !!msg.esp;
+    setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
+      (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'), hubEspLinked ? 'ok' : 'bad');
+    renderStatus();
+  }
+
+  function joinedAs(link){
+    ctrlConn = link;
+    joinBtn.disabled = false;
+    joinBtn.textContent = 'Rejoin';
+    renderStatus();
+  }
+
   function joinHub(rawCode){
     var code = (rawCode || '').trim().toUpperCase();
     if (!code){ setLinkStatus(ctrlStatus, 'Enter the code shown on the laptop', 'bad'); return; }
+    var attempt = ++joinAttempt;
     if (ctrlPeer){ try { ctrlPeer.destroy(); } catch (e) {} ctrlPeer = null; }
+    if (ctrlRelay){ try { ctrlRelay.end(true); } catch (e) {} ctrlRelay = null; }
     ctrlConn = null;
     joinBtn.disabled = true;
     setLinkStatus(ctrlStatus, 'Connecting…');
+    var relayStarted = false;
+    function fallBack(){
+      if (relayStarted || attempt !== joinAttempt || (ctrlConn && ctrlConn.open)) return;
+      relayStarted = true;
+      startCtrlRelay(code, attempt);
+    }
+    var directTimer = setTimeout(fallBack, DIRECT_TIMEOUT_MS);
     loadScript(PEERJS_URL).then(function(){
-      var peer = new Peer(PEER_PREFIX + 'c' + Math.random().toString(36).slice(2, 8), { debug: 1 });
+      var peer = new Peer(PEER_PREFIX + 'c' + Math.random().toString(36).slice(2, 8), peerOpts());
       ctrlPeer = peer;
       peer.on('open', function(){
         var conn = peer.connect(PEER_PREFIX + code, { reliable: true });
+        conn.kind = 'direct';
         conn.on('open', function(){
-          ctrlConn = conn;
-          joinBtn.disabled = false;
-          joinBtn.textContent = 'Rejoin';
-          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · tap Start sensor', 'ok');
-          renderStatus();
+          if (attempt !== joinAttempt || relayStarted) { try { conn.close(); } catch (e) {} return; }
+          clearTimeout(directTimer);
+          joinedAs(conn);
+          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · DIRECT · tap Start sensor', 'ok');
         });
-        conn.on('data', function(msg){
-          if (msg && msg.t === 'pins'){ onTiltPins(msg.h); return; }
-          if (!msg || msg.t !== 'hub') return;
-          hubEspLinked = !!msg.esp;
-          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'),
-            hubEspLinked ? 'ok' : 'bad');
-          renderStatus();
-        });
+        conn.on('data', function(msg){ onHubMsg(msg, code, 'DIRECT'); });
         conn.on('close', function(){
+          if (ctrlConn !== conn) return;
           ctrlConn = null;
           joinBtn.disabled = false;
           setLinkStatus(ctrlStatus, 'Disconnected from laptop · rejoin', 'bad');
@@ -1740,14 +1864,59 @@
         });
       });
       peer.on('error', function(err){
-        joinBtn.disabled = false;
-        setLinkStatus(ctrlStatus, 'Could not join · check the code (' + (err && err.type ? err.type : 'error') + ')', 'bad');
+        if (attempt !== joinAttempt) return;
+        if (err && err.type === 'peer-unavailable'){
+          // signaling reached PeerJS fine and no room has this code
+          clearTimeout(directTimer);
+          joinBtn.disabled = false;
+          setLinkStatus(ctrlStatus, 'No laptop with code ' + code + ' · check the code', 'bad');
+          return;
+        }
+        fallBack();  // network-level trouble: go straight to the relay
       });
-    }).catch(function(){
+    }).catch(fallBack);
+  }
+
+  function startCtrlRelay(code, attempt){
+    setLinkStatus(ctrlStatus, 'Direct link blocked on this network · trying relay…');
+    connectRelay(function(client){
+      if (attempt !== joinAttempt){ client.end(true); return; }
+      ctrlRelay = client;
+      var base = RELAY_TOPIC + code;
+      var link = relayLink(client, base + '/up', 40);  // tilt at up to ~25Hz
+      var gotHub = false;
+      client.subscribe(base + '/down');
+      client.on('message', function(topic, payload){
+        var msg;
+        try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+        if (!gotHub){ gotHub = true; joinedAs(link); }
+        onHubMsg(msg, code, 'RELAY');
+      });
+      // say hello until the hub answers, then keep-alive so it doesn't time us out
+      (function hello(){
+        if (attempt !== joinAttempt || !link.open) return;
+        client.publish(base + '/up', JSON.stringify({ t: 'hello' }));
+        setTimeout(hello, gotHub ? 2000 : 1000);
+      })();
+      setTimeout(function(){
+        if (!gotHub && attempt === joinAttempt){
+          joinBtn.disabled = false;
+          setLinkStatus(ctrlStatus, 'No laptop answered on code ' + code + ' · check the code / laptop page', 'bad');
+        }
+      }, 10000);
+    }, function(){
+      if (attempt !== joinAttempt) return;
       joinBtn.disabled = false;
-      setLinkStatus(ctrlStatus, 'Phone link needs internet (PeerJS CDN unreachable)', 'bad');
+      setLinkStatus(ctrlStatus, 'Could not reach the laptop · direct and relay both failed', 'bad');
     });
   }
+
+  // relay has no close event: if the hub goes quiet, say so
+  setInterval(function(){
+    if (ctrlConn && ctrlConn.kind === 'relay' && performance.now() - lastHubMsgAt > 5000){
+      setLinkStatus(ctrlStatus, 'Laptop not responding (relay) · rejoin', 'bad');
+    }
+  }, 1000);
   joinBtn.addEventListener('click', function(){ joinHub(joinCodeEl.value); });
   joinCodeEl.addEventListener('keydown', function(e){ if (e.key === 'Enter') joinHub(joinCodeEl.value); });
 
