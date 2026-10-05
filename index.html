@@ -166,6 +166,51 @@
   .join-input:focus{outline:2px solid var(--green);outline-offset:-1px;}
   .join-row .btn{flex:0 0 auto;}
 
+  /* ---------- mode 2 layout ----------
+     Mobile: the column wrappers dissolve (display:contents) and .o1-.o8 keep
+     the original single-column order. Desktop: sensing left, servos right,
+     sized to the viewport so the whole view fits without scrolling. */
+  .tilt-sense,.tilt-sense-main,.tilt-side{display:contents;}
+  .o1{order:1}.o2{order:2}.o3{order:3}.o4{order:4}.o5{order:5}.o6{order:6}.o7{order:7}.o8{order:8}
+  .tilt-servo{display:flex;flex-direction:column;gap:20px;}
+  #angleGraph{height:140px;}
+
+  @media (min-width: 1024px){
+    body.wide .shell{width:min(100% - 48px, 1440px);}
+    body.wide .topbar{min-height:56px;padding-block:8px;}
+    body.wide #viewTilt .intro{min-height:0;flex-direction:row;align-items:baseline;justify-content:flex-start;
+      gap:18px;padding:14px 0 12px;}
+    /* mobile reorder hooks off -- desktop uses plain DOM order inside each column */
+    .tilt-layout .o1,.tilt-layout .o2,.tilt-layout .o3,.tilt-layout .o4,
+    .tilt-layout .o5,.tilt-layout .o6,.tilt-layout .o7,.tilt-layout .o8{order:0;}
+    body.wide #viewTilt .intro .eyebrow{margin:0;order:2;}
+    body.wide #viewTilt h1{font-size:30px;}
+    body.wide .page-footer{min-height:40px;}
+
+    .tilt-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:32px;
+      height:calc(100dvh - 186px);min-height:540px;padding-bottom:12px;}
+    .tilt-sense{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:16px;min-height:0;
+      --lvl:clamp(180px, 30vh, 290px);}
+    .tilt-sense-main{display:grid;grid-template-columns:var(--lvl) minmax(0,1fr);gap:24px;align-items:start;}
+    .tilt-level-wrap .level{width:var(--lvl);margin:0;}
+    .tilt-side{display:flex;flex-direction:column;gap:12px;padding-top:24px;}
+    .tilt-side .readout-section{padding-top:0;}
+    .tilt-side .stat-value{font-size:40px;}
+    .tilt-graph{display:flex;flex-direction:column;min-height:0;}
+    .tilt-graph .graph-wrap{flex:1;display:flex;flex-direction:column;min-height:110px;}
+    #angleGraph{flex:1 1 0;height:auto;min-height:0;}
+
+    .link-hub,.link-ctrl{padding:10px 12px;}
+    .hub-qr{width:92px;height:92px;flex-basis:92px;}
+    .hub-qr img,.hub-qr canvas{width:82px !important;height:82px !important;}
+    .hub-code{font-size:28px;}
+
+    /* right column scrolls on its own if calibration is opened, so the page doesn't */
+    .tilt-servo{min-height:0;overflow-y:auto;gap:16px;padding-right:2px;}
+    .tilt-pins .pin-grid{width:min(100%, calc(100dvh - 330px));}
+    .tilt-servo #calSection{padding-bottom:0;}
+  }
+
   .preset-row{margin-top:12px;}
   .preset-row .btn{min-height:38px;padding:0 6px;font-size:11px;}
   .preset-row .btn.active{border-color:var(--green);color:var(--green);}
@@ -315,11 +360,12 @@
     <h1>Tilt field<span class="title-period">.</span></h1>
   </section>
 
-  <section class="visual-layout">
+  <section class="visual-layout tilt-layout">
+   <div class="tilt-sense">
     <!-- Phone link (LUCKY DRAW pattern, PeerJS/WebRTC): the device wired to
          the ESP32 is the HUB (spectates + relays to USB), the iPhone is the
          CONTROLLER. Needs internet + an HTTPS-hosted page on both ends. -->
-    <div class="link-panel" id="linkPanel">
+    <div class="link-panel o1" id="linkPanel">
       <div class="matrix-heading">
         <span>PHONE LINK</span>
         <span id="linkRole">--</span>
@@ -343,7 +389,8 @@
       </div>
     </div>
 
-    <div>
+    <div class="tilt-sense-main">
+    <div class="tilt-level-wrap o2">
       <div class="matrix-heading">
         <span>LEVEL</span>
         <span>±30°</span>
@@ -354,7 +401,8 @@
       </div>
     </div>
 
-    <div class="readout-section">
+    <div class="tilt-side">
+    <div class="readout-section o3">
       <p class="eyebrow">LIVE READOUT</p>
       <div class="stat-pair">
         <div class="primary-stat"><span class="stat-value" id="rollStat">0.0</span><span class="stat-unit">deg<br>ROLL</span></div>
@@ -362,7 +410,30 @@
       </div>
     </div>
 
-    <div>
+    <div class="btnrow o5">
+      <button class="btn primary" id="startBtn" type="button">Start sensor</button>
+      <button class="btn" id="tareBtn" type="button">Set level</button>
+    </div>
+
+    <div class="fallback o6" id="fallbackPanel">
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Roll</span><strong><span id="rollVal">0</span>°</strong></span>
+        <input type="range" id="rollSlider" min="-30" max="30" value="0" step="1">
+      </label>
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Pitch</span><strong><span id="pitchVal">0</span>°</strong></span>
+        <input type="range" id="pitchSlider" min="-30" max="30" value="0" step="1">
+      </label>
+    </div>
+
+    <div class="readout-footer o7">
+      <span class="readout-footer-mark"></span>
+      <span id="note">Tap Start sensor to request motion permission.</span>
+    </div>
+    </div>
+    </div>
+
+    <div class="tilt-graph o4">
       <div class="matrix-heading">
         <span>ANGLE · X / Y / Z</span>
         <span>±180°</span>
@@ -378,34 +449,18 @@
       </div>
     </div>
 
-    <div class="btnrow">
-      <button class="btn primary" id="startBtn" type="button">Start sensor</button>
-      <button class="btn" id="tareBtn" type="button">Set level</button>
-    </div>
+   </div>
 
-    <div class="fallback" id="fallbackPanel">
-      <label class="stat-row">
-        <span class="stat-row-head"><span>Roll</span><strong><span id="rollVal">0</span>°</strong></span>
-        <input type="range" id="rollSlider" min="-30" max="30" value="0" step="1">
-      </label>
-      <label class="stat-row">
-        <span class="stat-row-head"><span>Pitch</span><strong><span id="pitchVal">0</span>°</strong></span>
-        <input type="range" id="pitchSlider" min="-30" max="30" value="0" step="1">
-      </label>
-    </div>
+   <div class="tilt-servo o8" id="tiltServoCol">
 
-    <div class="readout-footer">
-      <span class="readout-footer-mark"></span>
-      <span id="note">Tap Start sensor to request motion permission.</span>
-    </div>
-
-    <div>
+    <div class="tilt-pins">
       <div class="matrix-heading">
         <span>PIN HEIGHT</span>
         <span id="tiltPinLabel">AWAITING ESP32</span>
       </div>
       <div class="pin-grid" id="tiltPinGrid"></div>
     </div>
+   </div>
   </section>
   </div>
 
@@ -693,6 +748,7 @@
   // without the device.
   var views = { 0: document.getElementById('viewHome'), 1: document.getElementById('viewTof'), 2: document.getElementById('viewTilt') };
   var calSection = document.getElementById('calSection');
+  var calHome = calSection.nextElementSibling;  // the footer -- where calSection returns to
   var backBtn = document.getElementById('backBtn');
   var footerRight = document.getElementById('footerRight');
   var modeTofBtn = document.getElementById('modeTofBtn');
@@ -710,6 +766,13 @@
     calSection.hidden = (m === 0);
     backBtn.hidden = (m === 0);
     footerRight.innerHTML = 'WS :81 <i></i> ' + FOOTER[m];
+    // Desktop two-column layout is mode 2 only (see .tilt-layout CSS).
+    document.body.classList.toggle('wide', m === 2);
+    // Calibration lives under the pins in mode 2 (right column on desktop),
+    // and back in its own section below the view otherwise.
+    var servoCol = document.getElementById('tiltServoCol');
+    if (m === 2 && calSection.parentNode !== servoCol) servoCol.appendChild(calSection);
+    else if (m !== 2 && calSection.parentNode === servoCol) calHome.parentNode.insertBefore(calSection, calHome);
     if (m === 2){
       resizeGraph();  // canvas had 0 width while its view was hidden
       renderLink();   // hub vs controller panel (may also hide calibration)
@@ -991,12 +1054,15 @@
   function resizeGraph(){
     var dpr = window.devicePixelRatio || 1;
     var rect = graphCanvas.getBoundingClientRect();
-    if (rect.width){
+    // CSS owns the size (140px on mobile, fills the left column on desktop);
+    // match the backing store to it so lines stay crisp.
+    if (rect.width && rect.height){
       graphCanvas.width = Math.round(rect.width * dpr);
-      graphCanvas.height = Math.round(140 * dpr);
+      graphCanvas.height = Math.round(rect.height * dpr);
     }
   }
   window.addEventListener('resize', resizeGraph);
+  if (window.ResizeObserver) new ResizeObserver(resizeGraph).observe(graphCanvas);
 
   function drawGraph(){
     var w = graphCanvas.width, h = graphCanvas.height;
