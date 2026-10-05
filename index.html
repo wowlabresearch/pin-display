@@ -398,6 +398,14 @@
       <span class="readout-footer-mark"></span>
       <span id="note">Tap Start sensor to request motion permission.</span>
     </div>
+
+    <div>
+      <div class="matrix-heading">
+        <span>PIN HEIGHT</span>
+        <span id="tiltPinLabel">AWAITING ESP32</span>
+      </div>
+      <div class="pin-grid" id="tiltPinGrid"></div>
+    </div>
   </section>
   </div>
 
@@ -637,6 +645,7 @@
     }
     if (msg.mode !== undefined) showView(msg.mode);
     if (msg.tof) onTofFrame(msg.tof, msg.h || []);
+    else if (msg.h) onTiltPins(msg.h);
     if (msg.cal !== undefined){
       calMode = !!msg.cal;
       sweepingPin = -1;
@@ -757,19 +766,53 @@
     document.getElementById('legendNote').textContent = 'PIN WINDOW ' + tofNear + ' – ' + tofFar + ' MM';
   }
 
-  function buildPinGrid(){
-    pinGridEl.innerHTML = '';
-    pinGridEl.style.gridTemplateColumns = 'repeat(' + gridCols + ', minmax(0, 1fr))';
-    pinCells = [];
+  // Same ROWS x COLS pin view in both modes: ToF (pinGrid) and tilt (tiltPinGrid).
+  var tiltPinGridEl = document.getElementById('tiltPinGrid');
+  var tiltPinLabel = document.getElementById('tiltPinLabel');
+  var tiltPinCells = [];
+
+  function makePinGrid(el){
+    el.innerHTML = '';
+    el.style.gridTemplateColumns = 'repeat(' + gridCols + ', minmax(0, 1fr))';
+    var cells = [];
     for (var i = 0; i < gridRows * gridCols; i++){
       var cell = document.createElement('div');
       cell.className = 'pin-cell';
       cell.innerHTML = '<span class="pin-fill"></span><span class="pin-val">0.0</span>';
-      pinGridEl.appendChild(cell);
-      pinCells.push(cell);
+      el.appendChild(cell);
+      cells.push(cell);
     }
+    return cells;
+  }
+
+  function buildPinGrid(){
+    pinCells = makePinGrid(pinGridEl);
+    tiltPinCells = makePinGrid(tiltPinGridEl);
     document.getElementById('pinMaxLabel').textContent = '0 – ' + (2 * crankR).toFixed(1) + ' MM';
   }
+
+  // heights in 0.1mm, as sent by the firmware
+  function renderPins(cells, heights){
+    var maxH = 2 * crankR;
+    for (var j = 0; j < cells.length && j < heights.length; j++){
+      var h = heights[j] / 10;
+      cells[j].querySelector('.pin-fill').style.height = (h / maxH * 100) + '%';
+      cells[j].querySelector('.pin-val').textContent = h.toFixed(1);
+    }
+  }
+
+  // Tilt mode: {"h":[...]} straight from the ESP32 (or relayed by the hub
+  // to a controller phone).
+  var lastTiltPinAt = 0;
+  function onTiltPins(heights){
+    lastTiltPinAt = performance.now();
+    renderPins(tiltPinCells, heights);
+    tiltPinLabel.textContent = '0 – ' + (2 * crankR).toFixed(1) + ' MM · LIVE';
+    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'pins', h: heights });
+  }
+  setInterval(function(){
+    if (lastTiltPinAt && performance.now() - lastTiltPinAt > 1500) tiltPinLabel.textContent = 'NO DATA FROM ESP32';
+  }, 500);
 
   function renderTofAvailability(){
     tofTag.classList.toggle('ok', tofOk === true);
@@ -809,12 +852,7 @@
     }
     tofNearestEl.textContent = valid ? nearest : '--';
     tofValidEl.textContent = valid;
-    var maxH = 2 * crankR;
-    for (var j = 0; j < pinCells.length && j < heights.length; j++){
-      var h = heights[j] / 10;
-      pinCells[j].querySelector('.pin-fill').style.height = (h / maxH * 100) + '%';
-      pinCells[j].querySelector('.pin-val').textContent = h.toFixed(1);
-    }
+    renderPins(pinCells, heights);
   }
 
   // No frame for a while -> say so (firmware also drops the pins on its side).
@@ -1259,6 +1297,7 @@
           renderStatus();
         });
         conn.on('data', function(msg){
+          if (msg && msg.t === 'pins'){ onTiltPins(msg.h); return; }
           if (!msg || msg.t !== 'hub') return;
           hubEspLinked = !!msg.esp;
           setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'),
