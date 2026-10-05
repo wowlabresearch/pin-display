@@ -258,7 +258,15 @@
     /* right column scrolls on its own if calibration is opened, so the page doesn't */
     .tilt-servo{min-height:0;overflow-y:auto;gap:16px;padding-right:2px;}
     .tilt-pins .pin-grid{width:min(100%, calc(100dvh - 330px));}
+    /* webcam on: pins and preview share the right column's height */
+    .tilt-servo.has-cam .tilt-pins .pin-grid{width:min(100%, calc(50dvh - 140px));}
+    .tilt-servo.has-cam .cam-hub .cam-frame{width:min(100%, calc((50dvh - 200px) * 4 / 3));margin-inline:auto;}
   }
+
+  /* webcam live view */
+  .cam-view,.cam-hub{display:flex;flex-direction:column;gap:10px;}
+  .cam-frame{position:relative;width:100%;aspect-ratio:4 / 3;overflow:hidden;border:1px solid var(--line);background:#1a1a1a;}
+  .cam-frame video,.cam-frame img{display:block;width:100%;height:100%;object-fit:cover;}
 
   .preset-row{margin-top:12px;}
   .preset-row .btn{min-height:38px;padding:0 6px;font-size:11px;}
@@ -584,6 +592,18 @@
       </div>
     </div>
 
+    <!-- controller phone: live view of the pin display from the hub's webcam -->
+    <div class="cam-view o1" id="camView" hidden>
+      <div class="matrix-heading">
+        <span>LIVE VIEW · PIN DISPLAY</span>
+        <span id="camVia">--</span>
+      </div>
+      <div class="cam-frame">
+        <video id="camVideo" playsinline muted autoplay hidden></video>
+        <img id="camImg" alt="Live view of the pin display" hidden>
+      </div>
+    </div>
+
     <div class="tilt-sense-main">
     <div class="tilt-level-wrap o2">
       <div class="matrix-heading">
@@ -679,6 +699,18 @@
         <span id="tiltPinLabel">AWAITING ESP32</span>
       </div>
       <div class="pin-grid" id="tiltPinGrid"></div>
+    </div>
+
+    <!-- hub laptop: share its webcam with the remote controller -->
+    <div class="cam-hub" id="camHub" hidden>
+      <div class="matrix-heading">
+        <span>WEBCAM → PHONE</span>
+        <span id="camHubStatus">OFF</span>
+      </div>
+      <div class="cam-frame" id="camHubFrame" hidden>
+        <video id="camPreview" playsinline muted autoplay></video>
+      </div>
+      <button class="btn" id="camBtn" type="button">Share webcam with phone</button>
     </div>
    </div>
   </section>
@@ -1659,6 +1691,7 @@
     linkRoleEl.textContent = hub ? 'HUB · SPECTATOR' : 'CONTROLLER';
     // response is an ESP32 setting -- only the device wired to it can change it
     respRow.hidden = !hub;
+    camHub.hidden = !hub;
     if (hub) startHub();
   }
 
@@ -1716,6 +1749,7 @@
         setLinkStatus(hubStatus, 'Phone connected · DIRECT', 'ok');
         if (currentMode !== 2) selectMode(2);
         sendHubState();
+        offerCamToPhone();
       });
       conn.on('data', onPhoneData);
       conn.on('close', function(){
@@ -1755,6 +1789,9 @@
       client.on('message', function(topic, payload){
         var msg;
         try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+        // a live direct link wins; relay stragglers (e.g. right after the
+        // phone upgraded to direct) must not pull the hub back onto the relay
+        if (phoneConn && phoneConn.open && phoneConn.kind === 'direct') return;
         relayPhoneSeenAt = performance.now();
         if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone){
           // a relayed phone takes over, same as a new direct one would
@@ -1764,6 +1801,7 @@
           setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
           if (currentMode !== 2) selectMode(2);
           sendHubState();
+          offerCamToPhone();
         }
         if (msg.t === 'tilt') onPhoneData(msg);
       });
@@ -1807,6 +1845,7 @@
   // Controller side: join the laptop's room -- direct WebRTC first, relay if
   // that can't connect (different networks behind strict NAT/firewalls).
   var ctrlRelay = null, joinAttempt = 0, lastHubMsgAt = 0;
+  var ctrlDirectAttempt = 0;  // join attempt whose direct link won -- relay stands down
 
   function onHubMsg(msg, code, via){
     if (!msg) return;
@@ -1845,12 +1884,23 @@
     loadScript(PEERJS_URL).then(function(){
       var peer = new Peer(PEER_PREFIX + 'c' + Math.random().toString(36).slice(2, 8), peerOpts());
       ctrlPeer = peer;
+      // the hub calls us with its webcam once linked -- receive only
+      peer.on('call', function(call){
+        call.answer();
+        call.on('stream', function(stream){ showCamVideo(stream); });
+        call.on('close', hideCam);
+      });
       peer.on('open', function(){
         var conn = peer.connect(PEER_PREFIX + code, { reliable: true });
         conn.kind = 'direct';
         conn.on('open', function(){
-          if (attempt !== joinAttempt || relayStarted) { try { conn.close(); } catch (e) {} return; }
+          if (attempt !== joinAttempt) { try { conn.close(); } catch (e) {} return; }
           clearTimeout(directTimer);
+          // A direct link that shows up late still beats the relay (faster,
+          // real video): take it over and shut the relay down.
+          ctrlDirectAttempt = attempt;
+          if (ctrlConn && ctrlConn.kind === 'relay') ctrlConn.open = false;
+          if (ctrlRelay){ try { ctrlRelay.end(true); } catch (e) {} ctrlRelay = null; }
           joinedAs(conn);
           setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · DIRECT · tap Start sensor', 'ok');
         });
@@ -1880,13 +1930,16 @@
   function startCtrlRelay(code, attempt){
     setLinkStatus(ctrlStatus, 'Direct link blocked on this network · trying relay…');
     connectRelay(function(client){
-      if (attempt !== joinAttempt){ client.end(true); return; }
+      if (attempt !== joinAttempt || ctrlDirectAttempt === attempt){ client.end(true); return; }
       ctrlRelay = client;
       var base = RELAY_TOPIC + code;
       var link = relayLink(client, base + '/up', 40);  // tilt at up to ~25Hz
       var gotHub = false;
       client.subscribe(base + '/down');
+      client.subscribe(base + '/cam');
       client.on('message', function(topic, payload){
+        if (topic === base + '/cam'){ showCamSnapshot(payload.toString()); return; }
+        if (ctrlDirectAttempt === attempt) return;  // direct link took over
         var msg;
         try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
         if (!gotHub){ gotHub = true; joinedAs(link); }
@@ -1899,13 +1952,13 @@
         setTimeout(hello, gotHub ? 2000 : 1000);
       })();
       setTimeout(function(){
-        if (!gotHub && attempt === joinAttempt){
+        if (!gotHub && attempt === joinAttempt && ctrlDirectAttempt !== attempt){
           joinBtn.disabled = false;
           setLinkStatus(ctrlStatus, 'No laptop answered on code ' + code + ' · check the code / laptop page', 'bad');
         }
       }, 10000);
     }, function(){
-      if (attempt !== joinAttempt) return;
+      if (attempt !== joinAttempt || ctrlDirectAttempt === attempt) return;
       joinBtn.disabled = false;
       setLinkStatus(ctrlStatus, 'Could not reach the laptop · direct and relay both failed', 'bad');
     });
@@ -1919,6 +1972,114 @@
   }, 1000);
   joinBtn.addEventListener('click', function(){ joinHub(joinCodeEl.value); });
   joinCodeEl.addEventListener('keydown', function(e){ if (e.key === 'Enter') joinHub(joinCodeEl.value); });
+
+  /* ---------- webcam: hub laptop -> remote controller phone ---------- */
+  // DIRECT link: a real WebRTC video call (PeerJS media), smooth.
+  // RELAY link: WebRTC can't get through either, so small JPEG snapshots go
+  // over the MQTT relay instead (~3 fps) -- enough to see the pins move.
+  var camHub = document.getElementById('camHub');
+  var camHubFrame = document.getElementById('camHubFrame');
+  var camHubStatus = document.getElementById('camHubStatus');
+  var camPreview = document.getElementById('camPreview');
+  var camBtn = document.getElementById('camBtn');
+  var camView = document.getElementById('camView');
+  var camVia = document.getElementById('camVia');
+  var camVideo = document.getElementById('camVideo');
+  var camImg = document.getElementById('camImg');
+  var camStream = null, camCall = null, camCalledConn = null, camSnapTimer = null;
+  var camCanvas = document.createElement('canvas');
+  var SNAP_W = 320, SNAP_H = 240, SNAP_MS = 333, SNAP_QUALITY = 0.5;
+
+  function renderCamHub(){
+    var on = !!camStream;
+    camHubFrame.hidden = !on;
+    camBtn.textContent = on ? 'Stop webcam' : 'Share webcam with phone';
+    camBtn.classList.toggle('primary', !on);
+    document.getElementById('tiltServoCol').classList.toggle('has-cam', on);
+    var phone = phoneConn && phoneConn.open;
+    camHubStatus.textContent = !on ? 'OFF' : !phone ? 'ON · NO PHONE' :
+      phoneConn.kind === 'relay' ? 'ON · SNAPSHOTS ~3 FPS' : 'ON · LIVE VIDEO';
+  }
+
+  function startCam(){
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      camHubStatus.textContent = 'NO CAMERA API (needs HTTPS)';
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false })
+      .then(function(stream){
+        camStream = stream;
+        camPreview.srcObject = stream;
+        camPreview.play().catch(function(){});
+        renderCamHub();
+        offerCamToPhone();
+      })
+      .catch(function(err){ camHubStatus.textContent = 'CAMERA BLOCKED (' + (err && err.name || 'error') + ')'; });
+  }
+
+  function stopCam(){
+    if (camStream) camStream.getTracks().forEach(function(t){ t.stop(); });
+    camStream = null;
+    camPreview.srcObject = null;
+    if (camCall){ try { camCall.close(); } catch (e) {} camCall = null; camCalledConn = null; }
+    clearInterval(camSnapTimer); camSnapTimer = null;
+    renderCamHub();
+  }
+  camBtn.addEventListener('click', function(){ if (camStream) stopCam(); else startCam(); });
+
+  // Send the webcam to whichever phone is connected now, by its path.
+  function offerCamToPhone(){
+    renderCamHub();
+    if (!camStream || !phoneConn || !phoneConn.open) return;
+    if (phoneConn.kind === 'relay'){
+      if (!camSnapTimer) camSnapTimer = setInterval(sendSnapshot, SNAP_MS);
+      return;
+    }
+    clearInterval(camSnapTimer); camSnapTimer = null;
+    if (camCalledConn === phoneConn) return;  // already calling this phone
+    if (camCall){ try { camCall.close(); } catch (e) {} }
+    if (hubPeer && hubPeer.call && phoneConn.peer){
+      camCall = hubPeer.call(phoneConn.peer, camStream);
+      camCalledConn = phoneConn;
+    }
+  }
+
+  function sendSnapshot(){
+    if (!camStream || !relayPhone || !relayPhone.open || phoneConn !== relayPhone || !hubRelay || !hubRelay.publish) return;
+    if (!camPreview.videoWidth) return;
+    camCanvas.width = SNAP_W; camCanvas.height = SNAP_H;
+    camCanvas.getContext('2d').drawImage(camPreview, 0, 0, SNAP_W, SNAP_H);
+    hubRelay.publish(RELAY_TOPIC + hubCode + '/cam', camCanvas.toDataURL('image/jpeg', SNAP_QUALITY), { qos: 0 });
+  }
+  setInterval(renderCamHub, 1000);  // keep the status line in step with the phone link
+
+  // Controller side
+  function showCamVideo(stream){
+    camVideo.srcObject = stream;
+    camVideo.hidden = false; camImg.hidden = true;
+    camVideo.play().catch(function(){});
+    camVia.textContent = 'LIVE VIDEO';
+    camView.hidden = false;
+  }
+  var lastSnapAt = 0;
+  function showCamSnapshot(dataUrl){
+    if (dataUrl.indexOf('data:image/') !== 0) return;
+    camImg.src = dataUrl;
+    camImg.hidden = false;
+    if (!camVideo.srcObject) camVideo.hidden = true;
+    lastSnapAt = performance.now();
+    camVia.textContent = 'SNAPSHOTS · RELAY';
+    camView.hidden = false;
+  }
+  function hideCam(){
+    camVideo.srcObject = null;
+    camVideo.hidden = true;
+    if (performance.now() - lastSnapAt > 3000) camView.hidden = true;
+  }
+  // snapshots just stop when the hub turns the webcam off
+  setInterval(function(){
+    if (!camImg.hidden && !camVideo.srcObject && performance.now() - lastSnapAt > 3000) camView.hidden = true;
+  }, 1000);
 
   // Opened from the hub's QR (?join=CODE): go straight to tilt as controller.
   if (joinParam){
