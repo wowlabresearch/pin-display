@@ -1596,6 +1596,10 @@
   // /down (hub->phone). Public broker = no auth: fine for tilt data, but
   // anyone who knows a room code could publish to it.
   var MQTT_URL = 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';
+  // Order matters (hub and phone must land on the same one). Measured from
+  // Korea at 20 msg/s: HiveMQ (Frankfurt) delivered 160/160 at a steady ~270ms
+  // end to end; EMQX (US West) is nearer but rate-limits public clients --
+  // only 80/160 arrived, p90 ~900ms. Reliable beats near, so HiveMQ first.
   var RELAY_BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
   var RELAY_TOPIC = 'pindisplay26/rooms/';
   var DIRECT_TIMEOUT_MS = 6000;   // no direct link by then -> use the relay
@@ -1803,6 +1807,7 @@
           sendHubState();
           offerCamToPhone();
         }
+        if (msg.t === 'camAck') onSnapAck(msg.id);
         if (msg.t === 'tilt') onPhoneData(msg);
       });
     }, function(){ hubRelay = null; });  // relay unreachable: direct links still work
@@ -1887,7 +1892,7 @@
       // the hub calls us with its webcam once linked -- receive only
       peer.on('call', function(call){
         call.answer();
-        call.on('stream', function(stream){ showCamVideo(stream); });
+        call.on('stream', function(stream){ showCamVideo(stream); tuneLowLatency(call); });
         call.on('close', hideCam);
       });
       peer.on('open', function(){
@@ -1938,7 +1943,11 @@
       client.subscribe(base + '/down');
       client.subscribe(base + '/cam');
       client.on('message', function(topic, payload){
-        if (topic === base + '/cam'){ showCamSnapshot(payload.toString()); return; }
+        if (topic === base + '/cam'){
+          var id = showCamSnapshot(payload.toString());
+          if (id !== null) client.publish(base + '/up', JSON.stringify({ t: 'camAck', id: id }), { qos: 0 });
+          return;
+        }
         if (ctrlDirectAttempt === attempt) return;  // direct link took over
         var msg;
         try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
@@ -1988,7 +1997,18 @@
   var camImg = document.getElementById('camImg');
   var camStream = null, camCall = null, camCalledConn = null, camSnapTimer = null;
   var camCanvas = document.createElement('canvas');
-  var SNAP_W = 320, SNAP_H = 240, SNAP_MS = 333, SNAP_QUALITY = 0.5;
+  // Snapshots are flow-controlled: the phone acks each frame and the hub only
+  // sends the next one after the ack (or a timeout), so frames never queue up
+  // on a slow link -- latency stays at one network round trip instead of
+  // growing. Frame rate adapts to the link, capped at ~8 fps.
+  var SNAP_W = 320, SNAP_H = 240, SNAP_QUALITY = 0.5;
+  // Up to SNAP_WINDOW frames may be in flight (so throughput isn't capped at
+  // 1/RTT) -- still a hard bound on queued frames, so latency can't creep up.
+  // The public broker occasionally drops a QoS-0 message; the ack timeout
+  // tracks the measured round trip so a lost frame costs ~2.5 RTT, not 1.5s.
+  var SNAP_MIN_MS = 110, SNAP_WINDOW = 4;
+  var snapId = 0, snapPending = {}, snapLastSentAt = 0, snapRtt = 0, snapCount = 0, snapFps = 0;
+  function snapAckTimeout(){ return snapRtt ? Math.max(600, snapRtt * 2.5) : 1500; }
 
   function renderCamHub(){
     var on = !!camStream;
@@ -1998,7 +2018,7 @@
     document.getElementById('tiltServoCol').classList.toggle('has-cam', on);
     var phone = phoneConn && phoneConn.open;
     camHubStatus.textContent = !on ? 'OFF' : !phone ? 'ON · NO PHONE' :
-      phoneConn.kind === 'relay' ? 'ON · SNAPSHOTS ~3 FPS' : 'ON · LIVE VIDEO';
+      phoneConn.kind === 'relay' ? 'ON · SNAPSHOTS ' + snapFps + ' FPS · ~' + Math.round(snapRtt / 2) + ' MS DELAY' : 'ON · LIVE VIDEO';
   }
 
   function startCam(){
@@ -2006,8 +2026,10 @@
       camHubStatus.textContent = 'NO CAMERA API (needs HTTPS)';
       return;
     }
-    navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false })
+    navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } }, audio: false })
       .then(function(stream){
+        // favour frame rate / low latency over sharpness (it's moving pins)
+        stream.getVideoTracks().forEach(function(t){ try { t.contentHint = 'motion'; } catch (e) {} });
         camStream = stream;
         camPreview.srcObject = stream;
         camPreview.play().catch(function(){});
@@ -2032,7 +2054,7 @@
     renderCamHub();
     if (!camStream || !phoneConn || !phoneConn.open) return;
     if (phoneConn.kind === 'relay'){
-      if (!camSnapTimer) camSnapTimer = setInterval(sendSnapshot, SNAP_MS);
+      if (!camSnapTimer) camSnapTimer = setInterval(sendSnapshot, 40);
       return;
     }
     clearInterval(camSnapTimer); camSnapTimer = null;
@@ -2047,10 +2069,26 @@
   function sendSnapshot(){
     if (!camStream || !relayPhone || !relayPhone.open || phoneConn !== relayPhone || !hubRelay || !hubRelay.publish) return;
     if (!camPreview.videoWidth) return;
+    var now = performance.now(), timeout = snapAckTimeout(), inFlight = 0;
+    for (var k in snapPending){ if (now - snapPending[k] > timeout) delete snapPending[k]; else inFlight++; }  // lost -> forget
+    if (inFlight >= SNAP_WINDOW) return;                // wait for the phone's acks
+    if (now - snapLastSentAt < SNAP_MIN_MS) return;
     camCanvas.width = SNAP_W; camCanvas.height = SNAP_H;
     camCanvas.getContext('2d').drawImage(camPreview, 0, 0, SNAP_W, SNAP_H);
-    hubRelay.publish(RELAY_TOPIC + hubCode + '/cam', camCanvas.toDataURL('image/jpeg', SNAP_QUALITY), { qos: 0 });
+    snapId = (snapId + 1) % 100000;
+    snapPending[snapId] = now; snapLastSentAt = now;
+    // "id|rtt|dataURL": the phone acks the id and shows the last round trip
+    hubRelay.publish(RELAY_TOPIC + hubCode + '/cam',
+      snapId + '|' + Math.round(snapRtt / 2) + '|' + camCanvas.toDataURL('image/jpeg', SNAP_QUALITY), { qos: 0 });  // one-way estimate
   }
+  function onSnapAck(id){
+    if (!(id in snapPending)) return;
+    var rtt = performance.now() - snapPending[id];
+    delete snapPending[id];
+    snapRtt = snapRtt ? snapRtt * 0.7 + rtt * 0.3 : rtt;
+    snapCount++;
+  }
+  setInterval(function(){ snapFps = snapCount; snapCount = 0; }, 1000);
   setInterval(renderCamHub, 1000);  // keep the status line in step with the phone link
 
   // Controller side
@@ -2061,15 +2099,51 @@
     camVia.textContent = 'LIVE VIDEO';
     camView.hidden = false;
   }
+  // Direct video: ask the receiver for the smallest jitter buffer it allows
+  // (Chrome/Edge honour these; Safari ignores them), and report whether the
+  // call ended up on a TURN relay server -- that, not the code, is the usual
+  // reason "direct" video still lags.
+  var camRouteTimer = null;
+  function tuneLowLatency(call){
+    var pc = call && call.peerConnection;
+    if (!pc) return;
+    pc.getReceivers().forEach(function(r){
+      try { r.playoutDelayHint = 0; } catch (e) {}
+      try { r.jitterBufferTarget = 0; } catch (e) {}
+    });
+    clearInterval(camRouteTimer);
+    camRouteTimer = setInterval(function(){
+      if (pc.connectionState === 'closed'){ clearInterval(camRouteTimer); return; }
+      pc.getStats().then(function(stats){
+        var pair = null, remote = {};
+        stats.forEach(function(s){
+          if (s.type === 'candidate-pair' && (s.selected || s.nominated) && s.state === 'succeeded') pair = s;
+          if (s.type === 'remote-candidate') remote[s.id] = s;
+        });
+        if (!pair) return;
+        var rc = remote[pair.remoteCandidateId];
+        var viaTurn = rc && rc.candidateType === 'relay';
+        var rtt = pair.currentRoundTripTime ? Math.round(pair.currentRoundTripTime * 1000) : 0;
+        camVia.textContent = 'LIVE VIDEO' + (viaTurn ? ' · TURN' : '') + (rtt ? ' · ~' + rtt + 'ms' : '');
+      }).catch(function(){});
+    }, 2000);
+  }
+
   var lastSnapAt = 0;
-  function showCamSnapshot(dataUrl){
-    if (dataUrl.indexOf('data:image/') !== 0) return;
+  // payload "id|rtt|data:image/jpeg..." -> shows it, returns the id to ack
+  function showCamSnapshot(payload){
+    var a = payload.indexOf('|'), b = payload.indexOf('|', a + 1);
+    if (a < 0 || b < 0) return null;
+    var id = parseInt(payload.slice(0, a), 10), rtt = parseInt(payload.slice(a + 1, b), 10);
+    var dataUrl = payload.slice(b + 1);
+    if (dataUrl.indexOf('data:image/') !== 0) return null;
     camImg.src = dataUrl;
     camImg.hidden = false;
     if (!camVideo.srcObject) camVideo.hidden = true;
     lastSnapAt = performance.now();
-    camVia.textContent = 'SNAPSHOTS · RELAY';
+    camVia.textContent = 'SNAPSHOTS · RELAY' + (rtt ? ' · ~' + rtt + 'ms' : '');
     camView.hidden = false;
+    return id;
   }
   function hideCam(){
     camVideo.srcObject = null;
