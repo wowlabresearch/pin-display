@@ -661,6 +661,10 @@
         <span class="stat-row-head"><span>Response · water ↔ instant</span><strong><span id="respVal">70</span></strong></span>
         <input type="range" id="respSlider" min="0" max="100" step="1" value="70">
       </label>
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Bounce · phone Z jolt → heave</span><strong><span id="bounceVal">50</span></strong></span>
+        <input type="range" id="bounceSlider" min="0" max="100" step="1" value="50">
+      </label>
     </div>
 
     <div class="fallback o6" id="fallbackPanel">
@@ -1052,6 +1056,7 @@
     }
     if (msg.inv){ invPins = msg.inv; renderInv(); }  // after any grid rebuild above
     if (msg.resp !== undefined && !respDragging) renderResp(msg.resp);
+    if (msg.bounce !== undefined && !bounceDragging) renderBounce(msg.bounce);
     // Calibration first: while it's on, the calibration page owns the screen
     // regardless of the firmware's underlying mode.
     if (msg.cal !== undefined){
@@ -1387,6 +1392,11 @@
     pitchStat.textContent = pitch.toFixed(1);
   }
 
+  // Biggest |Z jolt| (signed, m/s^2) since the last tilt message actually went
+  // out, so a spike shorter than the send interval still reaches the ESP32.
+  var hzPeak = 0, gzBase = null;
+  function noteJolt(v){ if (Math.abs(v) > Math.abs(hzPeak)) hzPeak = v; }
+
   function sendTilt(roll, pitch){
     var now = performance.now();
     updateBubble(roll, pitch);
@@ -1401,11 +1411,13 @@
         y: curY === null ? 0 : Math.round(curY * 10) / 10,
         z: curZ === null ? 0 : Math.round(curZ * 10) / 10 };
       if (curA) msg.a = [Math.round(curA[0] * 100) / 100, Math.round(curA[1] * 100) / 100, Math.round(curA[2] * 100) / 100];
-      ctrlConn.send(msg);
+      msg.hz = Math.round(hzPeak * 10) / 10;
+      if (ctrlConn.send(msg) !== false) hzPeak = 0;  // relay may drop a throttled send
       return;
     }
     if (linkReady() && !calMode && currentMode === 2){
-      wsSend({ r: r, p: p });
+      wsSend({ r: r, p: p, hz: Math.round(hzPeak * 10) / 10 });
+      hzPeak = 0;
     }
   }
 
@@ -1538,6 +1550,13 @@
     motionActive = true;
     lastMotionAt = performance.now();
     curA = [g.x || 0, g.y || 0, g.z || 0];
+    // Bounce input: Z acceleration with gravity removed. iOS gives it directly
+    // (e.acceleration); otherwise high-pass the gravity-included value.
+    var lin = e.acceleration;
+    var jz;
+    if (lin && typeof lin.z === 'number') jz = lin.z;
+    else { gzBase = gzBase === null ? curA[2] : gzBase * 0.95 + curA[2] * 0.05; jz = curA[2] - gzBase; }
+    noteJolt(jz);
   }
 
   function showFallback(msg){
@@ -1613,6 +1632,26 @@
   });
   respSlider.addEventListener('change', function(){ respDragging = false; sendResp(); });
 
+  /* ---------- bounce slider ({"bounce":0..100} -> ESP32 heave gain) ---------- */
+  var bounceSlider = document.getElementById('bounceSlider');
+  var bounceVal = document.getElementById('bounceVal');
+  var bounceDragging = false, bounceTimer = null, lastBounceSentAt = 0;
+  function bounceLabel(v){ return v <= 0 ? '0 · off' : String(v); }
+  function renderBounce(v){ bounceSlider.value = v; bounceVal.textContent = bounceLabel(+v); }
+  function sendBounce(){
+    clearTimeout(bounceTimer);
+    var wait = 80 - (performance.now() - lastBounceSentAt);
+    if (wait > 0){ bounceTimer = setTimeout(sendBounce, wait); return; }
+    lastBounceSentAt = performance.now();
+    wsSend({ bounce: +bounceSlider.value });
+  }
+  bounceSlider.addEventListener('input', function(){
+    bounceDragging = true;
+    bounceVal.textContent = bounceLabel(+bounceSlider.value);
+    sendBounce();
+  });
+  bounceSlider.addEventListener('change', function(){ bounceDragging = false; sendBounce(); });
+
   /* ---------- phone link: laptop HUB <-> iPhone CONTROLLER (PeerJS) ---------- */
   // Same pattern as LUCKY DRAW: WebRTC data channel brokered by PeerJS's free
   // public signaling server -- no server of our own, no ESP32 Wi-Fi. The device
@@ -1675,13 +1714,14 @@
     return {
       kind: 'relay', open: true, client: client,
       send: function(msg){
-        if (!this.open) return;
+        if (!this.open) return false;
         var now = performance.now();
         if (msg.t === 'tilt' || msg.t === 'pins'){
-          if (now - last < minIntervalMs) return;
+          if (now - last < minIntervalMs) return false;  // dropped -- caller keeps its peak
           last = now;
         }
         client.publish(topicOut, JSON.stringify(msg), { qos: 0 });
+        return true;
       },
       close: function(){ this.open = false; }
     };
@@ -1881,6 +1921,7 @@
     lastOrientationAt = performance.now();
     curX = msg.x; curY = msg.y; curZ = msg.z;
     if (msg.a){ curA = msg.a; motionActive = true; lastMotionAt = lastOrientationAt; }
+    if (typeof msg.hz === 'number') noteJolt(msg.hz);
     sendTilt(msg.r, msg.p);
   }
   setInterval(function(){
