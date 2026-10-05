@@ -273,6 +273,7 @@
   .cam-view,.cam-hub{display:flex;flex-direction:column;gap:10px;}
   .cam-frame{position:relative;width:100%;aspect-ratio:4 / 3;overflow:hidden;border:1px solid var(--line);background:#1a1a1a;}
   .cam-frame video,.cam-frame img{display:block;width:100%;height:100%;object-fit:cover;}
+  .cam-frame iframe{display:block;width:100%;height:100%;border:0;background:#1a1a1a;}
 
   .preset-row{margin-top:12px;}
   .preset-row .btn{min-height:38px;padding:0 6px;font-size:11px;}
@@ -726,7 +727,11 @@
       <div class="cam-frame" id="camHubFrame" hidden>
         <video id="camPreview" playsinline muted autoplay></video>
       </div>
-      <button class="btn" id="camBtn" type="button">Share webcam with phone</button>
+      <div class="btnrow">
+        <button class="btn" id="camBtn" type="button">Share webcam with phone</button>
+        <button class="btn" id="vdoBtn" type="button">Stream via VDO.Ninja</button>
+      </div>
+      <span class="hub-status" id="vdoNote">VDO.Ninja = real video across any network (free, no sign-up), shown right in the phone's LIVE VIEW.</span>
       <!-- alternative live view: a Google Meet the phone opens itself -->
       <div class="meet-row">
         <input class="join-input meet-input" id="meetInput" type="url" inputmode="url" autocomplete="off"
@@ -1855,7 +1860,7 @@
   }, 1000);
 
   function sendHubState(){
-    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0, meet: meetUrl || '' });
+    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0, meet: meetUrl || '', vdo: vdoId || '' });
   }
   setInterval(sendHubState, 1000);
 
@@ -1890,6 +1895,7 @@
     lastHubMsgAt = performance.now();
     hubEspLinked = !!msg.esp;
     showMeetLink(msg.meet || '');
+    showVdo(msg.vdo || '');
     setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
       (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'), hubEspLinked ? 'ok' : 'bad');
     renderStatus();
@@ -2043,12 +2049,16 @@
   function snapAckTimeout(){ return snapRtt ? Math.max(600, snapRtt * 2.5) : 1500; }
 
   function renderCamHub(){
-    var on = !!camStream;
-    camHubFrame.hidden = !on;
+    var on = !!camStream, vdo = !!vdoId;
+    camHubFrame.hidden = !(on || vdo);
+    camPreview.hidden = vdo;
     camBtn.textContent = on ? 'Stop webcam' : 'Share webcam with phone';
-    camBtn.classList.toggle('primary', !on);
-    document.getElementById('tiltServoCol').classList.toggle('has-cam', on);
+    camBtn.classList.toggle('primary', !on && !vdo);
+    vdoBtn.textContent = vdo ? 'Stop VDO.Ninja' : 'Stream via VDO.Ninja';
+    vdoBtn.classList.toggle('primary', !on && !vdo);
+    document.getElementById('tiltServoCol').classList.toggle('has-cam', on || vdo);
     var phone = phoneConn && phoneConn.open;
+    if (vdo){ camHubStatus.textContent = phone ? 'ON · VDO.NINJA → PHONE' : 'ON · VDO.NINJA · NO PHONE'; return; }
     camHubStatus.textContent = !on ? 'OFF' : !phone ? 'ON · NO PHONE' :
       phoneConn.kind === 'relay' ? 'ON · SNAPSHOTS ' + snapFps + ' FPS · ~' + Math.round(snapRtt / 2) + ' MS DELAY' : 'ON · LIVE VIDEO';
   }
@@ -2079,7 +2089,7 @@
     clearInterval(camSnapTimer); camSnapTimer = null;
     renderCamHub();
   }
-  camBtn.addEventListener('click', function(){ if (camStream) stopCam(); else startCam(); });
+  camBtn.addEventListener('click', function(){ if (vdoId) stopVdo(); if (camStream) stopCam(); else startCam(); });
 
   // Send the webcam to whichever phone is connected now, by its path.
   function offerCamToPhone(){
@@ -2131,6 +2141,56 @@
     camVia.textContent = 'LIVE VIDEO';
     camView.hidden = false;
   }
+  /* ---------- VDO.Ninja: real low-latency video, embeddable ---------- */
+  // Google Meet refuses to be framed (X-Frame-Options: SAMEORIGIN), so it can
+  // never sit inside this page. VDO.Ninja is built to be embedded: the hub
+  // frames a "push" page that publishes its webcam over WebRTC (with
+  // VDO.Ninja's own relay servers, so it crosses networks), and the phone
+  // frames the matching "view" page inside LIVE VIEW. Only the random stream
+  // id travels over our link; each side builds its own URL from it.
+  var vdoBtn = document.getElementById('vdoBtn');
+  var vdoId = null, vdoHubFrame = null, vdoViewId = null, vdoViewFrame = null;
+  var VDO_ID_RE = /^[A-Za-z0-9]{6,40}$/;
+
+  function makeFrame(src){
+    var f = document.createElement('iframe');
+    f.src = src;
+    f.allow = 'camera; microphone; autoplay; fullscreen; display-capture';
+    f.setAttribute('allowfullscreen', '');
+    return f;
+  }
+
+  function startVdo(){
+    if (camStream) stopCam();
+    vdoId = 'pd26' + (hubCode || 'x') + Math.random().toString(36).slice(2, 10);
+    // push: pick the webcam and start at once, no mic, minimal UI
+    vdoHubFrame = makeFrame('https://vdo.ninja/?push=' + vdoId + '&webcam&autostart&audiodevice=0&cleanoutput');
+    camHubFrame.appendChild(vdoHubFrame);
+    renderCamHub();
+    sendHubState();
+  }
+  function stopVdo(){
+    if (vdoHubFrame) vdoHubFrame.remove();
+    vdoHubFrame = null; vdoId = null;
+    renderCamHub();
+    sendHubState();
+  }
+  vdoBtn.addEventListener('click', function(){ if (vdoId) stopVdo(); else startVdo(); });
+
+  // Phone side: show (or drop) the hub's VDO.Ninja stream in LIVE VIEW.
+  function showVdo(id){
+    id = VDO_ID_RE.test(id) ? id : '';
+    if (id === (vdoViewId || '')) return;
+    if (vdoViewFrame){ vdoViewFrame.remove(); vdoViewFrame = null; }
+    vdoViewId = id || null;
+    if (!id){ if (!camVideo.srcObject && camImg.hidden) camView.hidden = true; return; }
+    vdoViewFrame = makeFrame('https://vdo.ninja/?view=' + id + '&cleanoutput&noaudio&autoplay');
+    camVideo.hidden = true; camImg.hidden = true;
+    camVideo.parentNode.appendChild(vdoViewFrame);
+    camVia.textContent = 'LIVE VIDEO · VDO.NINJA';
+    camView.hidden = false;
+  }
+
   /* ---------- Google Meet link: hub shares, phone opens ---------- */
   // Meet can't be embedded (it refuses iframes), so the hub just passes the
   // link along in its regular {"t":"hub"} state message and the phone shows
@@ -2225,6 +2285,7 @@
     return id;
   }
   function hideCam(){
+    if (vdoViewFrame) return;  // VDO.Ninja view owns LIVE VIEW now
     camVideo.srcObject = null;
     camVideo.hidden = true;
     if (performance.now() - lastSnapAt > 3000) camView.hidden = true;
