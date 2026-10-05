@@ -1191,17 +1191,14 @@
     renderLegend();
   }
 
+  // The color bar now spans exactly the pin window (Near..Far sliders), so its
+  // end labels follow the sliders and the old bracket is no longer needed.
   function renderLegend(){
-    document.getElementById('legendNear').textContent = visNear + ' mm';
-    document.getElementById('legendFar').textContent = visFar + ' mm';
-    // Bracket the pin window on the color scale (clamped -- it can start
-    // below visNear, e.g. 100 vs 200).
-    var w = document.getElementById('legendWindow');
-    var a = Math.max(0, (tofNear - visNear) / (visFar - visNear));
-    var b = Math.min(1, (tofFar - visNear) / (visFar - visNear));
-    w.style.left = (a * 100) + '%';
-    w.style.width = (Math.max(0, b - a) * 100) + '%';
-    document.getElementById('legendNote').textContent = 'PIN WINDOW ' + tofNear + ' – ' + tofFar + ' MM';
+    document.getElementById('legendNear').textContent = tofNear + ' mm';
+    document.getElementById('legendFar').textContent = tofFar + ' mm';
+    document.getElementById('legendWindow').hidden = true;
+    document.getElementById('legendNote').textContent = 'COLORS = PIN WINDOW ' + tofNear + ' – ' + tofFar + ' MM · BEYOND FAR = FADED';
+    if (lastTofDist) paintTofCells(lastTofDist);  // recolor right away when a slider moves
   }
 
   // Same ROWS x COLS pin view in both modes: ToF (pinGrid) and tilt (tiltPinGrid).
@@ -1260,22 +1257,24 @@
     if (tofOk === false) tofEmptyLabel.textContent = 'ToF sensor not found · check wiring and reboot the ESP32';
   }
 
-  // Range map keeps the ToF visualizer's coral -> yellow -> teal ramp (near ->
-  // far) over 200-4000mm -- deliberately not the deck palette, so depth stays
-  // readable. Independent of the narrower pin window.
+  // Range map keeps the ToF visualizer's coral -> yellow -> teal ramp, but it is
+  // stretched over the current PIN WINDOW (Near = coral, Far = teal), so the
+  // whole ramp is spent on the distances that actually move the pins -- narrow
+  // the window and small depth differences become clearly different colors.
+  // Closer than Near stays full coral; beyond Far is a faded teal (it's outside
+  // the window: those pins are fully down).
   var RAMP = [[237,112,84],[242,215,119],[52,168,145]];
+  var lastTofDist = null;
   function distanceColor(d){
-    var t = Math.max(0, Math.min(1, (d - visNear) / (visFar - visNear)));
+    if (d > tofFar) return 'rgba(52,168,145,0.32)';
+    var t = Math.max(0, Math.min(1, (d - tofNear) / Math.max(1, tofFar - tofNear)));
     var a, b, u;
     if (t < 0.52){ a = RAMP[0]; b = RAMP[1]; u = t / 0.52; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.52) / 0.48; }
     return 'rgb(' + Math.round(a[0] + (b[0]-a[0])*u) + ',' + Math.round(a[1] + (b[1]-a[1])*u) + ',' + Math.round(a[2] + (b[2]-a[2])*u) + ')';
   }
 
-  function onTofFrame(dist, heights){
-    tofFrames++;
-    lastTofAt = performance.now();
-    tofEmpty.hidden = true;
-    tofFrameLabel.textContent = 'FRAME ' + String(tofFrames).padStart(5, '0');
+  function paintTofCells(dist){
+    lastTofDist = dist;
     var nearest = Infinity, valid = 0;
     for (var i = 0; i < tofCells.length && i < dist.length; i++){
       var d = dist[i];
@@ -1289,6 +1288,16 @@
         tofCells[i].textContent = '';
       }
     }
+    return { nearest: nearest, valid: valid };
+  }
+
+  function onTofFrame(dist, heights){
+    tofFrames++;
+    lastTofAt = performance.now();
+    tofEmpty.hidden = true;
+    tofFrameLabel.textContent = 'FRAME ' + String(tofFrames).padStart(5, '0');
+    var stats = paintTofCells(dist);
+    var nearest = stats.nearest, valid = stats.valid;
     tofNearestEl.textContent = valid ? nearest : '--';
     tofValidEl.textContent = valid;
     renderPins(pinCells, heights);
