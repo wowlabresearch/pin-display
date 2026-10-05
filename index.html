@@ -174,17 +174,32 @@
   .o1{order:1}.o2{order:2}.o3{order:3}.o4{order:4}.o5{order:5}.o6{order:6}.o7{order:7}.o8{order:8}
   .tilt-servo{display:flex;flex-direction:column;gap:20px;}
   #angleGraph{height:140px;}
+  /* mode 1 uses the same trick; calibration (moved in by JS) always goes last */
+  .tof-ctrl{display:contents;}
+  #calSection{order:9;}
 
   @media (min-width: 1024px){
     body.wide .shell{width:min(100% - 48px, 1440px);}
     body.wide .topbar{min-height:56px;padding-block:8px;}
-    body.wide #viewTilt .intro{min-height:0;flex-direction:row;align-items:baseline;justify-content:flex-start;
+    body.wide .view .intro{min-height:0;flex-direction:row;align-items:baseline;justify-content:flex-start;
       gap:18px;padding:14px 0 12px;}
     /* mobile reorder hooks off -- desktop uses plain DOM order inside each column */
     .tilt-layout .o1,.tilt-layout .o2,.tilt-layout .o3,.tilt-layout .o4,
-    .tilt-layout .o5,.tilt-layout .o6,.tilt-layout .o7,.tilt-layout .o8{order:0;}
-    body.wide #viewTilt .intro .eyebrow{margin:0;order:2;}
-    body.wide #viewTilt h1{font-size:30px;}
+    .tilt-layout .o5,.tilt-layout .o6,.tilt-layout .o7,.tilt-layout .o8,
+    .tof-layout .o1,.tof-layout .o2,.tof-layout .o3,.tof-layout .o4{order:0;}
+    body.wide .view .intro .eyebrow{margin:0;order:2;}
+    body.wide .view h1{font-size:30px;}
+
+    /* mode 1: range map | pin heights | controls, all one screen */
+    .tof-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(280px,340px);gap:32px;
+      height:calc(100dvh - 186px);min-height:540px;padding-bottom:12px;}
+    .tof-sense,.tof-servo{min-height:0;}
+    .tof-sense .tof-frame,.tof-servo .pin-grid{width:min(100%, calc(100dvh - 300px));}
+    .tof-ctrl{display:flex;flex-direction:column;gap:16px;min-height:0;overflow-y:auto;padding-right:2px;}
+    .tof-ctrl .readout-section{padding-top:0;}
+    .tof-ctrl .stat-value{font-size:40px;}
+    .tof-ctrl .preset-row .btn{font-size:10px;}
+    .tof-ctrl #calSection{padding-bottom:0;}
     body.wide .page-footer{min-height:40px;}
 
     .tilt-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:32px;
@@ -292,8 +307,10 @@
       <p class="eyebrow">VL53L5CX <span>·</span> 8 × 8 → 4 × 4</p>
       <h1>Distance field<span class="title-period">.</span></h1>
     </section>
-    <section class="visual-layout">
-      <div>
+    <!-- desktop: range map | pin heights | controls (readout, window, calibration);
+         mobile: wrappers dissolve and .o* keep the single-column order -->
+    <section class="visual-layout tof-layout">
+      <div class="tof-sense o1">
         <div class="matrix-heading">
           <span>RANGE MAP</span>
           <span id="tofFrameLabel">AWAITING FRAME</span>
@@ -315,7 +332,24 @@
         <p class="legend-note"><span class="legend-note-mark"></span><span id="legendNote">PIN WINDOW 100 – 600 MM</span></p>
       </div>
 
-      <div>
+      <div class="tof-servo o3">
+        <div class="matrix-heading">
+          <span>PIN HEIGHT</span>
+          <span id="pinMaxLabel">0 – 38.9 MM</span>
+        </div>
+        <div class="pin-grid" id="pinGrid"></div>
+      </div>
+
+      <div class="tof-ctrl" id="tofCtrlCol">
+      <div class="readout-section o4">
+        <p class="eyebrow">LIVE READOUT</p>
+        <div class="stat-pair">
+          <div class="primary-stat"><span class="stat-value" id="tofNearest">--</span><span class="stat-unit">mm<br>NEAREST</span></div>
+          <div class="primary-stat"><span class="stat-value" id="tofValid">--</span><span class="stat-unit">/ 64<br>ZONES</span></div>
+        </div>
+      </div>
+
+      <div class="o2">
         <div class="matrix-heading">
           <span>PIN WINDOW</span>
           <span id="winSpanLabel">SPAN 500 MM</span>
@@ -334,21 +368,6 @@
           <button class="btn" type="button" data-near="200" data-far="4000">Room · 0.2–4m</button>
         </div>
       </div>
-
-      <div>
-        <div class="matrix-heading">
-          <span>PIN HEIGHT</span>
-          <span id="pinMaxLabel">0 – 38.9 MM</span>
-        </div>
-        <div class="pin-grid" id="pinGrid"></div>
-      </div>
-
-      <div class="readout-section">
-        <p class="eyebrow">LIVE READOUT</p>
-        <div class="stat-pair">
-          <div class="primary-stat"><span class="stat-value" id="tofNearest">--</span><span class="stat-unit">mm<br>NEAREST</span></div>
-          <div class="primary-stat"><span class="stat-value" id="tofValid">--</span><span class="stat-unit">/ 64<br>ZONES</span></div>
-        </div>
       </div>
     </section>
   </div>
@@ -766,13 +785,15 @@
     calSection.hidden = (m === 0);
     backBtn.hidden = (m === 0);
     footerRight.innerHTML = 'WS :81 <i></i> ' + FOOTER[m];
-    // Desktop two-column layout is mode 2 only (see .tilt-layout CSS).
-    document.body.classList.toggle('wide', m === 2);
-    // Calibration lives under the pins in mode 2 (right column on desktop),
-    // and back in its own section below the view otherwise.
-    var servoCol = document.getElementById('tiltServoCol');
-    if (m === 2 && calSection.parentNode !== servoCol) servoCol.appendChild(calSection);
-    else if (m !== 2 && calSection.parentNode === servoCol) calHome.parentNode.insertBefore(calSection, calHome);
+    // Desktop multi-column layouts for both feature pages (see .tof-layout /
+    // .tilt-layout CSS); the landing page stays a narrow column.
+    document.body.classList.toggle('wide', m !== 0);
+    // Calibration moves into the active page: under the pins in mode 2, in the
+    // controls column in mode 1, back below the views on the landing page.
+    var calTarget = m === 2 ? document.getElementById('tiltServoCol') :
+                    m === 1 ? document.getElementById('tofCtrlCol') : null;
+    if (calTarget && calSection.parentNode !== calTarget) calTarget.appendChild(calSection);
+    else if (!calTarget && calSection.parentNode !== calHome.parentNode) calHome.parentNode.insertBefore(calSection, calHome);
     if (m === 2){
       resizeGraph();  // canvas had 0 width while its view was hidden
       renderLink();   // hub vs controller panel (may also hide calibration)
@@ -1237,8 +1258,10 @@
     hubBlock.hidden = !hub;
     ctrlBlock.hidden = hub;
     linkRoleEl.textContent = hub ? 'HUB · SPECTATOR' : 'CONTROLLER';
-    // A controller phone has no ESP32 link of its own -- calibration lives on the hub.
-    calSection.hidden = !hub;
+    // Only a phone that has actually joined a laptop hides calibration (it has
+    // no ESP32 link of its own). A laptop whose USB just isn't connected yet
+    // keeps it -- the buttons start working as soon as USB comes up.
+    calSection.hidden = !!(ctrlConn && ctrlConn.open) || !!joinParam;
     if (hub) startHub();
   }
 
