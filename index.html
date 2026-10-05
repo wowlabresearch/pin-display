@@ -84,8 +84,10 @@
     font:10px var(--mono);letter-spacing:.04em;color:var(--muted);}
   .graph-legend strong{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums;}
   .graph-legend .sw{width:8px;height:8px;display:inline-block;margin-right:5px;vertical-align:0;}
+  .sw-x{background:#e4572e;} .sw-y{background:#2a9d5c;} .sw-z{background:#3b6fd4;}  /* = AXIS_COLORS */
   .graph-legend .graph-hint{margin-left:auto;}
-  #angleGraph{display:block;width:100%;height:140px;}
+  #angleGraph,#accelGraph{display:block;width:100%;height:140px;}
+  .tilt-graph{display:flex;flex-direction:column;gap:20px;}
 
   .btnrow{display:flex;gap:10px;}
   .btn{flex:1;min-height:44px;padding:0 14px;border:1px solid var(--line);color:var(--ink);background:transparent;
@@ -96,9 +98,11 @@
   .btn:focus-visible{outline:3px solid var(--coral);outline-offset:3px;}
 
   /* Servo calibration: per-pin 0 -> 180 -> 0 sweep on a ROWS x COLS grid. */
-  .cal-panel{display:none;flex-direction:column;gap:12px;}
-  .cal-panel.show{display:flex;}
   .cal-grid{display:grid;gap:6px;}
+  .cal-steps{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;
+    color:var(--muted);font-size:12px;line-height:1.6;}
+  .cal-steps strong{color:var(--ink);font-weight:500;}
+  .cal-side{display:flex;flex-direction:column;gap:18px;}
   .cal-cell{position:relative;aspect-ratio:1;overflow:hidden;padding:0;border:1px solid var(--line);
     background:#f7f8f4;color:var(--ink);cursor:pointer;font:10px var(--mono);
     transition:border-color 140ms ease, transform 140ms ease;}
@@ -186,10 +190,9 @@
   .tilt-sense,.tilt-sense-main,.tilt-side{display:contents;}
   .o1{order:1}.o2{order:2}.o3{order:3}.o4{order:4}.o5{order:5}.o6{order:6}.o7{order:7}.o8{order:8}
   .tilt-servo{display:flex;flex-direction:column;gap:20px;}
-  #angleGraph{height:140px;}
-  /* mode 1 uses the same trick; calibration (moved in by JS) always goes last */
+  #angleGraph,#accelGraph{height:140px;}
+  /* mode 1 uses the same trick */
   .tof-ctrl{display:contents;}
-  #calSection{order:9;}
 
   @media (min-width: 1024px){
     body.wide .shell{width:min(100% - 48px, 1440px);}
@@ -212,20 +215,26 @@
     .tof-ctrl .readout-section{padding-top:0;}
     .tof-ctrl .stat-value{font-size:40px;}
     .tof-ctrl .preset-row .btn{font-size:10px;}
-    .tof-ctrl #calSection{padding-bottom:0;}
 
     .tilt-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:32px;
       height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
     .tilt-sense{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:16px;min-height:0;
-      --lvl:clamp(180px, 30vh, 290px);}
+      --lvl:clamp(150px, 22vh, 250px);}
     .tilt-sense-main{display:grid;grid-template-columns:var(--lvl) minmax(0,1fr);gap:24px;align-items:start;}
     .tilt-level-wrap .level{width:var(--lvl);margin:0;}
     .tilt-side{display:flex;flex-direction:column;gap:12px;padding-top:24px;}
     .tilt-side .readout-section{padding-top:0;}
     .tilt-side .stat-value{font-size:40px;}
-    .tilt-graph{display:flex;flex-direction:column;min-height:0;}
-    .tilt-graph .graph-wrap{flex:1;display:flex;flex-direction:column;min-height:110px;}
-    #angleGraph{flex:1 1 0;height:auto;min-height:0;}
+    /* the two charts split the leftover height of the left column */
+    /* side by side, so each chart gets the full leftover height */
+    .tilt-graph{min-height:0;gap:16px;flex-direction:row;}
+    .graph-block{flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:120px;}
+    .graph-block .graph-legend{gap:10px;}
+    .graph-block .graph-wrap{flex:1;display:flex;flex-direction:column;min-height:0;}
+    /* never let the charts overlap: on very short screens the left column
+       scrolls on its own instead (page itself still doesn't) */
+    .tilt-sense{overflow-y:auto;padding-right:2px;}
+    #angleGraph,#accelGraph{flex:1 1 0;height:auto;min-height:0;}
 
     .link-hub,.link-ctrl{padding:10px 12px;}
     .hub-qr{width:92px;height:92px;flex-basis:92px;}
@@ -235,7 +244,6 @@
     /* right column scrolls on its own if calibration is opened, so the page doesn't */
     .tilt-servo{min-height:0;overflow-y:auto;gap:16px;padding-right:2px;}
     .tilt-pins .pin-grid{width:min(100%, calc(100dvh - 330px));}
-    .tilt-servo #calSection{padding-bottom:0;}
   }
 
   .preset-row{margin-top:12px;}
@@ -368,6 +376,31 @@
     #viewHome .mode-desc{font-size:16px;max-width:42ch;}
     #viewHome .mode-tag{font-size:13px;padding:5px 10px;}
     #viewHome .readout-footer{grid-column:1 / -1;font-size:14px;}
+    #viewHome .visual-layout{grid-template-columns:repeat(3, minmax(0,1fr));}
+
+    /* short laptop screens (~768px tall): compact the tilt page's upper rows
+       so both charts keep a usable height */
+    @media (max-height: 720px){
+      .tilt-sense{--lvl:clamp(120px, 19vh, 170px);gap:12px;}
+      .hub-qr{width:72px;height:72px;flex-basis:72px;}
+      .hub-qr img,.hub-qr canvas{width:64px !important;height:64px !important;}
+      .hub-code{font-size:22px;}
+      .link-hub{gap:12px;padding:8px 10px;}
+      .tilt-side{padding-top:20px;gap:8px;}
+      .tilt-side .stat-value{font-size:32px;}
+      .tilt-side .btn{min-height:38px;}
+    }
+
+    /* calibration page: big servo grid | readout + steps + buttons */
+    .cal-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,380px);gap:40px;
+      height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
+    .cal-main{min-height:0;}
+    .cal-main .cal-grid{width:min(100%, calc(100dvh - 230px));margin-inline:auto;}
+    .cal-side{display:flex;flex-direction:column;gap:20px;min-height:0;}
+    .cal-side .readout-section{padding-top:0;}
+    .cal-steps{font-size:14px;}
+    .cal-label{font-size:12px;}
+    .cal-angle{font-size:18px;}
   }
 
   @keyframes arrive{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
@@ -396,6 +429,14 @@
       <h1>Hands-on #1<span class="title-period">.</span></h1>
     </section>
     <section class="visual-layout">
+      <button class="mode-card" id="modeCalBtn" type="button">
+        <span class="mode-num">00</span>
+        <span class="mode-body">
+          <span class="mode-title">Servo Calibration</span>
+          <span class="mode-desc">Parks every servo at 0° and sweeps one at a time 0 → 180 → 0°, to check each pin really sits at 0 mm. Run this first.</span>
+          <span class="mode-tag">PCA9685 · 16 SERVOS</span>
+        </span>
+      </button>
       <button class="mode-card" id="modeTofBtn" type="button">
         <span class="mode-num">01</span>
         <span class="mode-body">
@@ -571,18 +612,35 @@
     </div>
 
     <div class="tilt-graph o4">
-      <div class="matrix-heading">
-        <span>ANGLE · X / Y / Z</span>
-        <span>±180°</span>
-      </div>
-      <div class="graph-wrap">
-        <div class="graph-legend">
-          <span><i class="sw" style="background:#202020"></i>X <strong id="xVal">--</strong></span>
-          <span><i class="sw" style="background:#d9d200"></i>Y <strong id="yVal">--</strong></span>
-          <span><i class="sw" style="background:#9a9a96"></i>Z <strong id="zVal">--</strong></span>
-          <span class="graph-hint">deg</span>
+      <div class="graph-block">
+        <div class="matrix-heading">
+          <span>ANGLE · X / Y / Z</span>
+          <span>±180°</span>
         </div>
-        <canvas id="angleGraph" height="140"></canvas>
+        <div class="graph-wrap">
+          <div class="graph-legend">
+            <span><i class="sw sw-x"></i>X <strong id="xVal">--</strong></span>
+            <span><i class="sw sw-y"></i>Y <strong id="yVal">--</strong></span>
+            <span><i class="sw sw-z"></i>Z <strong id="zVal">--</strong></span>
+            <span class="graph-hint">deg</span>
+          </div>
+          <canvas id="angleGraph" height="140"></canvas>
+        </div>
+      </div>
+      <div class="graph-block">
+        <div class="matrix-heading">
+          <span>ACCELEROMETER · X / Y / Z</span>
+          <span>±20 m/s²</span>
+        </div>
+        <div class="graph-wrap">
+          <div class="graph-legend">
+            <span><i class="sw sw-x"></i>X <strong id="axVal">--</strong></span>
+            <span><i class="sw sw-y"></i>Y <strong id="ayVal">--</strong></span>
+            <span><i class="sw sw-z"></i>Z <strong id="azVal">--</strong></span>
+            <span class="graph-hint">m/s² · incl. gravity</span>
+          </div>
+          <canvas id="accelGraph" height="140"></canvas>
+        </div>
       </div>
     </div>
 
@@ -601,24 +659,47 @@
   </section>
   </div>
 
-  <!-- ============ servo calibration (shared by both modes) ============ -->
-  <section class="visual-layout" id="calSection" hidden>
-    <div class="btnrow">
-      <button class="btn" id="calBtn" type="button">Servo calibration</button>
-    </div>
+  <!-- ===================== mode 0: servo calibration ===================== -->
+  <!-- Page-only view (no firmware mode of its own): entering sends
+       {"mode":0} + {"cal":1}, leaving sends {"cal":0}. -->
+  <div class="view" id="viewCal" hidden>
+    <section class="intro">
+      <p class="eyebrow">PCA9685 <span>·</span> 16 SERVOS</p>
+      <h1>Servo calibration<span class="title-period">.</span></h1>
+    </section>
+    <section class="visual-layout cal-layout">
+      <div class="cal-main">
+        <div class="matrix-heading">
+          <span>SERVO GRID · TAP TO SWEEP</span>
+          <span id="calStatus">ALL AT 0°</span>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
+      </div>
 
-    <div class="cal-panel" id="calPanel">
-      <div class="matrix-heading">
-        <span>SERVO CALIBRATION</span>
-        <span id="calStatus">ALL AT 0°</span>
+      <div class="cal-side">
+        <div class="readout-section">
+          <p class="eyebrow">LIVE READOUT</p>
+          <div class="stat-pair">
+            <div class="primary-stat"><span class="stat-value" id="calAngleStat">0</span><span class="stat-unit">deg<br>ANGLE</span></div>
+            <div class="primary-stat"><span class="stat-value" id="calStrokeStat">0.0</span><span class="stat-unit">mm<br>STROKE</span></div>
+          </div>
+        </div>
+        <ol class="cal-steps">
+          <li>Every servo is parked at raw 0° — each pin should sit at <strong>0 mm</strong>.</li>
+          <li>Tap a servo in the grid to sweep just that one 0 → 180 → 0°.</li>
+          <li>A dot marks the servos you've checked. If a pin isn't at 0 mm at 0°, re-seat its horn.</li>
+        </ol>
+        <div class="btnrow">
+          <button class="btn" id="zeroBtn" type="button">All to 0°</button>
+          <button class="btn primary" id="calExitBtn" type="button">Exit calibration</button>
+        </div>
+        <div class="readout-footer">
+          <span class="readout-footer-mark"></span>
+          <span id="calNote">Pin control (ToF / tilt) is paused while this page is open.</span>
+        </div>
       </div>
-      <div class="cal-grid" id="calGrid"></div>
-      <div class="btnrow">
-        <button class="btn" id="zeroBtn" type="button">All to 0°</button>
-        <button class="btn primary" id="calExitBtn" type="button">Exit calibration</button>
-      </div>
-    </div>
-  </section>
+    </section>
+  </div>
 </main>
 
 <script>
@@ -670,8 +751,8 @@
   /* ---------- servo calibration ---------- */
   // Firmware owns the state: it parks every servo at raw 0deg in cal mode,
   // runs the 0 -> 180 -> 0 sweep itself and streams {"sw":pin,"a":deg} back.
-  var calBtn = document.getElementById('calBtn');
-  var calPanel = document.getElementById('calPanel');
+  var calAngleStat = document.getElementById('calAngleStat');
+  var calStrokeStat = document.getElementById('calStrokeStat');
   var calGrid = document.getElementById('calGrid');
   var calStatus = document.getElementById('calStatus');
   var zeroBtn = document.getElementById('zeroBtn');
@@ -802,11 +883,13 @@
     }
   }
 
+  function setCalReadout(deg){
+    calAngleStat.textContent = deg;
+    calStrokeStat.textContent = strokeMM(deg).toFixed(1);
+  }
+
   function renderCal(){
-    calPanel.classList.toggle('show', calMode);
-    calBtn.classList.toggle('active', calMode);
-    calBtn.textContent = calMode ? 'Calibrating · pin control paused' : 'Servo calibration';
-    if (!calMode) calStatus.textContent = 'ALL AT 0°';
+    if (!calMode){ calStatus.textContent = 'ALL AT 0°'; setCalReadout(0); }
   }
 
   function onServerMessage(msg){
@@ -830,15 +913,19 @@
       // window changed (by this or another page) -- don't fight an active drag
       if (!winDragging){ tofNear = msg.near; tofFar = msg.far; renderWindow(); }
     }
-    if (msg.mode !== undefined) showView(msg.mode);
-    if (msg.tof) onTofFrame(msg.tof, msg.h || []);
-    else if (msg.h) onTiltPins(msg.h);
+    // Calibration first: while it's on, the calibration page owns the screen
+    // regardless of the firmware's underlying mode.
     if (msg.cal !== undefined){
       calMode = !!msg.cal;
       sweepingPin = -1;
       resetAllCells();
       renderCal();
+      if (calMode) showView(CAL_VIEW);
+      else if (currentMode === CAL_VIEW) showView(0);  // ended elsewhere (another page)
     }
+    if (msg.mode !== undefined && !calMode) showView(msg.mode);
+    if (msg.tof) onTofFrame(msg.tof, msg.h || []);
+    else if (msg.h) onTiltPins(msg.h);
     if (msg.sw !== undefined){
       if (msg.sw < 0){
         if (sweepingPin >= 0 && calCells[sweepingPin]){
@@ -848,6 +935,7 @@
         }
         sweepingPin = -1;
         calStatus.textContent = 'ALL AT 0°';
+        setCalReadout(0);
         return;
       }
       if (sweepingPin !== msg.sw && sweepingPin >= 0 && calCells[sweepingPin]){
@@ -857,12 +945,13 @@
       sweepingPin = msg.sw;
       if (calCells[msg.sw]) calCells[msg.sw].classList.add('is-sweeping');
       setCellAngle(msg.sw, msg.a);
-      calStatus.textContent = 'PIN ' + msg.sw + ' · ' + msg.a + '° · ' + strokeMM(msg.a).toFixed(1) + ' MM';
+      var r = Math.floor(msg.sw / gridCols), c = msg.sw % gridCols;
+      calStatus.textContent = 'SWEEPING R' + r + 'C' + c + ' · PIN ' + msg.sw;
+      setCalReadout(msg.a);
     }
   }
 
-  calBtn.addEventListener('click', function(){ wsSend({ cal: calMode ? 0 : 1 }); });
-  calExitBtn.addEventListener('click', function(){ wsSend({ cal: 0 }); });
+  calExitBtn.addEventListener('click', function(){ closeCal(); });
   zeroBtn.addEventListener('click', function(){
     // An interrupted sweep isn't a finished check -- drop it locally so the
     // firmware's {"sw":-1} reply doesn't mark it done.
@@ -878,10 +967,12 @@
   // follows its {"mode":n} broadcasts. Buttons also switch the view locally
   // right away so it doesn't feel laggy, and so the page can be previewed
   // without the device.
-  var views = { 0: document.getElementById('viewHome'), 1: document.getElementById('viewTof'), 2: document.getElementById('viewTilt') };
-  var calSection = document.getElementById('calSection');
-  var calHome = calSection.parentNode;  // <main> -- calSection returns to its end on the landing page
+  // CAL_VIEW is a page-only view: the firmware sits in mode 0 with cal on.
+  var CAL_VIEW = 3;
+  var views = { 0: document.getElementById('viewHome'), 1: document.getElementById('viewTof'),
+                2: document.getElementById('viewTilt'), 3: document.getElementById('viewCal') };
   var backBtn = document.getElementById('backBtn');
+  var modeCalBtn = document.getElementById('modeCalBtn');
   var modeTofBtn = document.getElementById('modeTofBtn');
   var modeTiltBtn = document.getElementById('modeTiltBtn');
   var tofTag = document.getElementById('tofTag');
@@ -893,20 +984,13 @@
     var changed = m !== currentMode;
     currentMode = m;
     for (var k in views) views[k].hidden = (+k !== m);
-    calSection.hidden = (m === 0);
     backBtn.hidden = (m === 0);
     // Desktop layouts for every page (landing tiles, .tof-layout,
-    // .tilt-layout); 'wide' only does anything inside the >=1024px media query.
+    // .tilt-layout, .cal-layout); 'wide' only does anything at >=1024px.
     document.body.classList.add('wide');
-    // Calibration moves into the active page: under the pins in mode 2, in the
-    // controls column in mode 1, back below the views on the landing page.
-    var calTarget = m === 2 ? document.getElementById('tiltServoCol') :
-                    m === 1 ? document.getElementById('tofCtrlCol') : null;
-    if (calTarget && calSection.parentNode !== calTarget) calTarget.appendChild(calSection);
-    else if (!calTarget && calSection.parentNode !== calHome) calHome.appendChild(calSection);
     if (m === 2){
       resizeGraph();  // canvas had 0 width while its view was hidden
-      renderLink();   // hub vs controller panel (may also hide calibration)
+      renderLink();   // hub vs controller panel
     }
     if (changed) window.scrollTo(0, 0);
   }
@@ -918,9 +1002,25 @@
     showView(m);
     wsSend({ mode: m });
   }
+  // Calibration: park the firmware at home (stops ToF/tilt driving the pins),
+  // then turn cal on -- it parks every servo at raw 0deg.
+  function openCal(){
+    if (!linkReady()){
+      homeNote.textContent = 'Not connected to the ESP32 · join the PinDisplay Wi-Fi or connect USB';
+    }
+    showView(CAL_VIEW);
+    wsSend({ mode: 0 });
+    wsSend({ cal: 1 });
+  }
+  function closeCal(){
+    wsSend({ cal: 0 });
+    showView(0);
+  }
+
+  modeCalBtn.addEventListener('click', openCal);
   modeTofBtn.addEventListener('click', function(){ selectMode(1); });
   modeTiltBtn.addEventListener('click', function(){ selectMode(2); });
-  backBtn.addEventListener('click', function(){ selectMode(0); });
+  backBtn.addEventListener('click', function(){ if (currentMode === CAL_VIEW) closeCal(); else selectMode(0); });
 
   /* ---------- mode 1: ToF range map + pin heights ---------- */
   var tofGridEl = document.getElementById('tofGrid');
@@ -1157,10 +1257,12 @@
     // Controller phone -> laptop hub (which forwards to the ESP32). Raw
     // x/y/z ride along so the hub's angle graph matches the phone's.
     if (ctrlConn && ctrlConn.open){
-      ctrlConn.send({ t: 'tilt', r: r, p: p,
+      var msg = { t: 'tilt', r: r, p: p,
         x: curX === null ? 0 : Math.round(curX * 10) / 10,
         y: curY === null ? 0 : Math.round(curY * 10) / 10,
-        z: curZ === null ? 0 : Math.round(curZ * 10) / 10 });
+        z: curZ === null ? 0 : Math.round(curZ * 10) / 10 };
+      if (curA) msg.a = [Math.round(curA[0] * 100) / 100, Math.round(curA[1] * 100) / 100, Math.round(curA[2] * 100) / 100];
+      ctrlConn.send(msg);
       return;
     }
     if (linkReady() && !calMode && currentMode === 2){
@@ -1168,98 +1270,113 @@
     }
   }
 
-  /* ---------- live X/Y/Z angle graph (LUCKY DRAW debug-graph pattern) ---------- */
-  // X = beta (front/back), Y = gamma (left/right), Z = alpha (compass heading,
-  // wrapped to -180..180 so it shares the axis). Raw, untared, unsmoothed --
-  // this shows what the sensor actually reports.
-  var graphCanvas = document.getElementById('angleGraph');
-  var graphCtx = graphCanvas.getContext('2d');
-  var xValEl = document.getElementById('xVal');
-  var yValEl = document.getElementById('yVal');
-  var zValEl = document.getElementById('zVal');
+  /* ---------- live strip charts (LUCKY DRAW debug-graph pattern) ---------- */
+  // Two charts, same X/Y/Z colors:
+  //  - ANGLE: X = beta (front/back), Y = gamma (left/right), Z = alpha
+  //    (compass heading, wrapped to -180..180 so it shares the axis).
+  //  - ACCEL: accelerationIncludingGravity x/y/z in m/s^2 (DeviceMotion),
+  //    same signal LUCKY DRAW graphed. Lying flat reads ~(0, 0, -9.8).
+  // Raw, untared, unsmoothed -- this shows what the sensors actually report.
   var GRAPH_LEN = 240;      // samples on screen (~4s at 60fps)
-  var GRAPH_RANGE = 180;    // deg, top-to-bottom = +/-180
-  var graphBuf = { x: [], y: [], z: [] };
-  var curX = null, curY = null, curZ = null;
+  var AXIS_COLORS = ['#e4572e', '#2a9d5c', '#3b6fd4'];  // X red-orange, Y green, Z blue
+  var curX = null, curY = null, curZ = null;            // orientation, deg
+  var curA = null;                                      // [ax, ay, az] m/s^2
   var sensorActive = false, lastOrientationAt = 0;
+  var motionActive = false, lastMotionAt = 0;
 
-  function resizeGraph(){
-    var dpr = window.devicePixelRatio || 1;
-    var rect = graphCanvas.getBoundingClientRect();
-    // CSS owns the size (140px on mobile, fills the left column on desktop);
-    // match the backing store to it so lines stay crisp.
-    if (rect.width && rect.height){
-      graphCanvas.width = Math.round(rect.width * dpr);
-      graphCanvas.height = Math.round(rect.height * dpr);
-    }
-  }
-  window.addEventListener('resize', resizeGraph);
-  if (window.ResizeObserver) new ResizeObserver(resizeGraph).observe(graphCanvas);
-
-  function drawGraph(){
-    var w = graphCanvas.width, h = graphCanvas.height;
-    if (!w || !h) return;
-    var dpr = window.devicePixelRatio || 1;
-    var midY = h / 2;
-    graphCtx.clearRect(0, 0, w, h);
-    // grid: 0 solid, +/-90 dashed
-    graphCtx.lineWidth = dpr;
-    graphCtx.strokeStyle = '#d0d0cc';
-    graphCtx.beginPath(); graphCtx.moveTo(0, midY); graphCtx.lineTo(w, midY); graphCtx.stroke();
-    graphCtx.setLineDash([4 * dpr, 4 * dpr]);
-    [90, -90].forEach(function(v){
-      var y = midY - (v / GRAPH_RANGE) * midY;
-      graphCtx.beginPath(); graphCtx.moveTo(0, y); graphCtx.lineTo(w, y); graphCtx.stroke();
-    });
-    graphCtx.setLineDash([]);
-    graphCtx.fillStyle = '#8a8a86';
-    graphCtx.font = ((window.innerWidth >= 1024 ? 12 : 9) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
-    graphCtx.fillText('+90', 6 * dpr, midY - midY / 2 - 4 * dpr);
-    graphCtx.fillText('-90', 6 * dpr, midY + midY / 2 - 4 * dpr);
-
-    function trace(arr, color){
-      if (arr.length < 2) return;
-      graphCtx.strokeStyle = color;
-      graphCtx.lineWidth = 1.75 * dpr;
-      graphCtx.lineJoin = 'round';
-      graphCtx.beginPath();
-      var prev = null;
-      for (var i = 0; i < arr.length; i++){
-        var x = (i / (GRAPH_LEN - 1)) * w;
-        var y = midY - (arr[i] / GRAPH_RANGE) * midY;
-        // break the line on a +/-180 wrap instead of drawing a full-height spike
-        if (i === 0 || Math.abs(arr[i] - prev) > 180) graphCtx.moveTo(x, y); else graphCtx.lineTo(x, y);
-        prev = arr[i];
+  function StripChart(canvas, opts){
+    var ctx = canvas.getContext('2d');
+    var buf = [[], [], []];
+    function resize(){
+      var dpr = window.devicePixelRatio || 1;
+      var rect = canvas.getBoundingClientRect();
+      // CSS owns the size (140px on mobile, fills the column on desktop);
+      // match the backing store to it so lines stay crisp.
+      if (rect.width && rect.height){
+        canvas.width = Math.round(rect.width * dpr);
+        canvas.height = Math.round(rect.height * dpr);
       }
-      graphCtx.stroke();
     }
-    trace(graphBuf.x, '#202020');
-    trace(graphBuf.y, '#d9d200');
-    trace(graphBuf.z, '#9a9a96');
-
-    if (sensorActive && performance.now() - lastOrientationAt > 500){
-      graphCtx.fillStyle = '#b4430a';
-      graphCtx.font = '600 ' + ((window.innerWidth >= 1024 ? 13 : 11) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
-      graphCtx.textAlign = 'right'; graphCtx.fillText('SIGNAL LOST', w - 8 * dpr, 18 * dpr); graphCtx.textAlign = 'left';
+    function sample(){
+      var v = opts.source();
+      if (!v) return;
+      for (var k = 0; k < 3; k++){
+        buf[k].push(v[k]);
+        if (buf[k].length > GRAPH_LEN) buf[k].shift();
+        opts.valEls[k].textContent = v[k].toFixed(1);
+      }
     }
+    function draw(){
+      var w = canvas.width, h = canvas.height;
+      if (!w || !h) return;
+      var dpr = window.devicePixelRatio || 1;
+      var midY = h / 2, big = window.innerWidth >= 1024;
+      ctx.clearRect(0, 0, w, h);
+      // grid: 0 solid, reference lines dashed
+      ctx.lineWidth = dpr;
+      ctx.strokeStyle = '#d0d0cc';
+      ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(w, midY); ctx.stroke();
+      ctx.setLineDash([4 * dpr, 4 * dpr]);
+      ctx.fillStyle = '#8a8a86';
+      ctx.font = ((big ? 12 : 9) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
+      opts.grid.forEach(function(g){
+        var y = midY - (g.v / opts.range) * midY;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+        ctx.fillText(g.label, 6 * dpr, y - 4 * dpr);
+      });
+      ctx.setLineDash([]);
+      for (var k = 0; k < 3; k++){
+        var arr = buf[k];
+        if (arr.length < 2) continue;
+        ctx.strokeStyle = AXIS_COLORS[k];
+        ctx.lineWidth = 1.75 * dpr;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        for (var i = 0; i < arr.length; i++){
+          var x = (i / (GRAPH_LEN - 1)) * w;
+          var y = midY - (Math.max(-opts.range, Math.min(opts.range, arr[i])) / opts.range) * midY;
+          // angle chart: break the line on a +/-180 wrap instead of a full-height spike
+          if (i === 0 || (opts.wrap && Math.abs(arr[i] - arr[i - 1]) > 180)) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      if (opts.active() && performance.now() - opts.lastAt() > 500){
+        ctx.fillStyle = '#b4430a';
+        ctx.font = '600 ' + ((big ? 13 : 11) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
+        ctx.textAlign = 'right'; ctx.fillText('SIGNAL LOST', w - 8 * dpr, 18 * dpr); ctx.textAlign = 'left';
+      }
+    }
+    window.addEventListener('resize', resize);
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
+    resize();
+    return { resize: resize, sample: sample, draw: draw };
   }
+
+  var angleChart = StripChart(document.getElementById('angleGraph'), {
+    range: 180, wrap: true,
+    grid: [{ v: 90, label: '+90' }, { v: -90, label: '-90' }],
+    valEls: [document.getElementById('xVal'), document.getElementById('yVal'), document.getElementById('zVal')],
+    source: function(){ return curX === null ? null : [curX, curY, curZ]; },
+    active: function(){ return sensorActive; }, lastAt: function(){ return lastOrientationAt; }
+  });
+  var accelChart = StripChart(document.getElementById('accelGraph'), {
+    range: 20, wrap: false,
+    grid: [{ v: 9.81, label: '+1g' }, { v: -9.81, label: '-1g' }],
+    valEls: [document.getElementById('axVal'), document.getElementById('ayVal'), document.getElementById('azVal')],
+    source: function(){ return curA; },
+    active: function(){ return motionActive; }, lastAt: function(){ return lastMotionAt; }
+  });
+
+  function resizeGraph(){ angleChart.resize(); accelChart.resize(); }
 
   // Sample once per frame from the latest values, so the time axis stays
   // uniform regardless of how often the sensor (or a slider) fires.
   function graphLoop(){
-    if (curX !== null){
-      graphBuf.x.push(curX); graphBuf.y.push(curY); graphBuf.z.push(curZ);
-      if (graphBuf.x.length > GRAPH_LEN){ graphBuf.x.shift(); graphBuf.y.shift(); graphBuf.z.shift(); }
-      xValEl.textContent = curX.toFixed(1);
-      yValEl.textContent = curY.toFixed(1);
-      zValEl.textContent = curZ.toFixed(1);
-    }
-    drawGraph();
+    angleChart.sample(); accelChart.sample();
+    angleChart.draw(); accelChart.draw();
     requestAnimationFrame(graphLoop);
   }
-  resizeGraph();
   requestAnimationFrame(graphLoop);
-
   // Light smoothing only -- same light-touch ratio used throughout the
   // LUCKY DRAW project: enough to tame raw sensor jitter without adding
   // noticeable lag (the ESP32-side spring in config.h is what supplies the
@@ -1275,6 +1392,16 @@
     sendTilt(smRoll - tareRoll, smPitch - tarePitch);
   }
 
+  // Accelerometer (incl. gravity), for the second chart only -- it doesn't
+  // drive the pins. Rides along with the tilt samples sent to the hub.
+  function onMotion(e){
+    var g = e.accelerationIncludingGravity;
+    if (!g || typeof g.x !== 'number') return;  // some browsers fire empty events
+    motionActive = true;
+    lastMotionAt = performance.now();
+    curA = [g.x || 0, g.y || 0, g.z || 0];
+  }
+
   function showFallback(msg){
     fallbackPanel.classList.add('show');
     if (msg) noteEl.textContent = msg;
@@ -1284,6 +1411,16 @@
   // must be called synchronously inside a real click handler, nothing
   // earlier in the gesture.
   function ensurePermission(){
+    // iOS gates motion (accelerometer) separately from orientation. Both
+    // requests are fired synchronously in this same tap, before any await,
+    // so both count as user-initiated.
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
+      DeviceMotionEvent.requestPermission().then(function(res){
+        if (res === 'granted') window.addEventListener('devicemotion', onMotion);
+      }).catch(function(){});
+    } else if (typeof DeviceMotionEvent !== 'undefined'){
+      window.addEventListener('devicemotion', onMotion);
+    }
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
       DeviceOrientationEvent.requestPermission().then(function(res){
         if (res === 'granted'){
@@ -1369,10 +1506,6 @@
     hubBlock.hidden = !hub;
     ctrlBlock.hidden = hub;
     linkRoleEl.textContent = hub ? 'HUB · SPECTATOR' : 'CONTROLLER';
-    // Only a phone that has actually joined a laptop hides calibration (it has
-    // no ESP32 link of its own). A laptop whose USB just isn't connected yet
-    // keeps it -- the buttons start working as soon as USB comes up.
-    calSection.hidden = !!(ctrlConn && ctrlConn.open) || !!joinParam;
     if (hub) startHub();
   }
 
@@ -1466,6 +1599,7 @@
     sensorActive = true;
     lastOrientationAt = performance.now();
     curX = msg.x; curY = msg.y; curZ = msg.z;
+    if (msg.a){ curA = msg.a; motionActive = true; lastMotionAt = lastOrientationAt; }
     sendTilt(msg.r, msg.p);
   }
   setInterval(function(){
