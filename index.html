@@ -36,7 +36,6 @@
       linear-gradient(115deg, #f2f2f0 0%, #fbfbf8 45%, #f2f2f0 100%);
     background-attachment:fixed;
     font-family:var(--display);
-    font-feature-settings:"tnum" 1;
     overscroll-behavior:none;-webkit-user-select:none;user-select:none;
   }
   button{font:inherit;}
@@ -333,13 +332,52 @@
   .readout-footer-mark{background:var(--acc);box-shadow:0 0 0 1px var(--ink);}
   .page-footer i{background:var(--acc-deep);}
 
+  /* ================= desktop readability + landing =================
+     Grey secondary text is sized for phones above; on a laptop at arm's
+     length it needs +2-4px. Landing becomes a hero title + two big tiles. */
+  @media (min-width: 1024px){
+    .eyebrow,.matrix-heading,.page-footer{font-size:13px;}
+    .connection-state{font-size:13px;}
+    .stat-unit{font-size:12px;}
+    .graph-legend{font-size:12px;}
+    .legend-label,.legend-value,.legend-note{font-size:12px;}
+    .hub-code-label,.hub-url{font-size:12px;}
+    .hub-status,.readout-footer{font-size:13px;}
+    .stat-row{font-size:14px;}
+    .stat-row strong{font-size:14px;}
+    .mode-tag{font-size:12px;}
+    .cal-label{font-size:11px;}
+    .cal-angle,.pin-val{font-size:14px;}
+    .tof-cell{font-size:11px;}
+    .empty-state{font-size:13px;}
+    .btn{font-size:14px;}
+    .preset-row .btn,.tof-ctrl .preset-row .btn{font-size:12px;padding:0 4px;white-space:nowrap;}
+    /* digits line up in live readouts without spacing out ordinary text */
+    .stat-value,.pin-val,.cal-angle,.tof-cell,.graph-legend strong,.stat-row strong,.hub-code{font-variant-numeric:tabular-nums;}
+    body.wide .view .intro .eyebrow{font-size:13px;}
+
+    /* landing: hero + two side-by-side mode tiles, fits one screen */
+    body.wide #viewHome .intro{flex-direction:column;align-items:flex-start;gap:0;padding:6vh 0 4vh;}
+    body.wide #viewHome .intro .eyebrow{order:0;margin:0 0 14px;font-size:14px;}
+    body.wide #viewHome h1{font-size:clamp(64px, 7.5vw, 120px);}
+    #viewHome .visual-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px;}
+    #viewHome .mode-card{flex-direction:column;justify-content:space-between;gap:28px;
+      min-height:clamp(260px, 42vh, 460px);padding:28px 28px 26px;}
+    #viewHome .mode-num{width:52px;height:52px;flex-basis:52px;font-size:16px;}
+    #viewHome .mode-body{gap:12px;}
+    #viewHome .mode-title{font-size:clamp(30px, 2.8vw, 44px);font-weight:300;letter-spacing:-.03em;}
+    #viewHome .mode-desc{font-size:16px;max-width:42ch;}
+    #viewHome .mode-tag{font-size:13px;padding:5px 10px;}
+    #viewHome .readout-footer{grid-column:1 / -1;font-size:14px;}
+  }
+
   @keyframes arrive{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
   @media (prefers-reduced-motion: reduce){
     *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important;}
   }
 </style>
 </head>
-<body>
+<body class="wide">
 <main class="shell">
   <header class="topbar">
     <span class="topbar-left">
@@ -866,9 +904,9 @@
     calSection.hidden = (m === 0);
     backBtn.hidden = (m === 0);
     footerRight.innerHTML = 'WS :81 <i></i> ' + FOOTER[m];
-    // Desktop multi-column layouts for both feature pages (see .tof-layout /
-    // .tilt-layout CSS); the landing page stays a narrow column.
-    document.body.classList.toggle('wide', m !== 0);
+    // Desktop layouts for every page (landing tiles, .tof-layout,
+    // .tilt-layout); 'wide' only does anything inside the >=1024px media query.
+    document.body.classList.add('wide');
     // Calibration moves into the active page: under the pins in mode 2, in the
     // controls column in mode 1, back below the views on the landing page.
     var calTarget = m === 2 ? document.getElementById('tiltServoCol') :
@@ -1183,9 +1221,9 @@
     });
     graphCtx.setLineDash([]);
     graphCtx.fillStyle = '#8a8a86';
-    graphCtx.font = (9 * dpr) + 'px ui-monospace, Menlo, monospace';
-    graphCtx.fillText('+90', 4 * dpr, midY - midY / 2 - 3 * dpr);
-    graphCtx.fillText('-90', 4 * dpr, midY + midY / 2 - 3 * dpr);
+    graphCtx.font = ((window.innerWidth >= 1024 ? 12 : 9) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
+    graphCtx.fillText('+90', 6 * dpr, midY - midY / 2 - 4 * dpr);
+    graphCtx.fillText('-90', 6 * dpr, midY + midY / 2 - 4 * dpr);
 
     function trace(arr, color){
       if (arr.length < 2) return;
@@ -1209,8 +1247,8 @@
 
     if (sensorActive && performance.now() - lastOrientationAt > 500){
       graphCtx.fillStyle = '#b4430a';
-      graphCtx.font = '600 ' + (11 * dpr) + 'px ui-monospace, Menlo, monospace';
-      graphCtx.fillText('SIGNAL LOST', w - 80 * dpr, 16 * dpr);
+      graphCtx.font = '600 ' + ((window.innerWidth >= 1024 ? 13 : 11) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
+      graphCtx.textAlign = 'right'; graphCtx.fillText('SIGNAL LOST', w - 8 * dpr, 18 * dpr); graphCtx.textAlign = 'left';
     }
   }
 
