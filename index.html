@@ -1,0 +1,1298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#eef1e9">
+<title>PIN DISPLAY</title>
+<style>
+  /* Visual language matches the ToF Field p5js-visualizer. No web fonts here:
+     in AP mode there's no internet, so the stacks fall back to system faces. */
+  :root{
+    color-scheme: light;
+    --paper:#eef1e9; --ink:#1b2823; --muted:#748078; --line:#cbd2c8;
+    --green:#1b6252; --coral:#ed7054; --yellow:#f2d777; --teal:#34a891;
+    --mono:"DM Mono",ui-monospace,Menlo,Consolas,monospace;
+    --display:"Space Grotesk",-apple-system,"Trebuchet MS",sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;min-height:100%;}
+  body{
+    color:var(--ink);
+    background-color:var(--paper);
+    background-image:radial-gradient(#cbd2c8 0.65px, transparent 0.65px);
+    background-size:18px 18px;
+    font-family:var(--display);
+    overscroll-behavior:none;-webkit-user-select:none;user-select:none;
+  }
+  button{font:inherit;}
+
+  .shell{width:min(100% - 32px, 560px);margin:0 auto;}
+
+  .topbar{min-height:66px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;
+    gap:10px 12px;padding-block:12px;border-bottom:1px solid var(--line);}
+  .wordmark{display:inline-flex;align-items:center;gap:10px;font-size:13px;font-weight:700;letter-spacing:.08em;
+    white-space:nowrap;}
+  .wordmark-mark{height:28px;padding:0 9px;display:grid;place-items:center;color:var(--paper);
+    background:var(--green);font:11px var(--mono);letter-spacing:.02em;}
+  .connection-state{display:flex;align-items:center;gap:8px;color:var(--muted);font:10px var(--mono);letter-spacing:.04em;}
+  .state-dot{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:#9da69f;}
+  .connection-state.is-connected .state-dot{background:var(--teal);box-shadow:0 0 0 4px rgb(52 168 145 / 14%);}
+
+  .intro{min-height:126px;display:flex;flex-direction:column;justify-content:center;animation:arrive 450ms ease both;}
+  .eyebrow,.matrix-heading,.page-footer{font:10px var(--mono);letter-spacing:.06em;}
+  .eyebrow{margin:0 0 12px;color:var(--muted);}
+  .eyebrow span{padding:0 4px;color:var(--coral);}
+  h1{margin:0;font-size:clamp(24px, 6.5vw, 40px);line-height:.98;font-weight:600;}
+  .title-period{color:var(--coral);}
+
+  .visual-layout{display:flex;flex-direction:column;gap:20px;padding-bottom:20px;animation:arrive 550ms 80ms ease both;}
+  .matrix-heading{display:flex;justify-content:space-between;padding:0 0 12px;color:var(--muted);}
+
+  .level{position:relative;width:min(100%, 360px);margin-inline:auto;aspect-ratio:1;overflow:hidden;
+    border:1px solid var(--line);background:#e4e9df;}
+  .level::before{content:"";position:absolute;left:50%;top:0;width:1px;height:100%;background:var(--line);}
+  .level::after{content:"";position:absolute;left:0;top:50%;width:100%;height:1px;background:var(--line);}
+  .level-ring{position:absolute;left:50%;top:50%;width:38%;aspect-ratio:1;border:1px dashed #b8c2b8;
+    border-radius:50%;transform:translate(-50%,-50%);}
+  .bubble{position:absolute;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;
+    background:var(--coral);box-shadow:0 0 0 6px rgb(237 112 84 / 16%);z-index:1;}
+
+  .readout-section{padding:4px 0 16px;border-bottom:1px solid var(--line);}
+  .stat-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .primary-stat{display:flex;align-items:end;gap:10px;}
+  .stat-value{font-size:46px;line-height:.9;font-weight:500;font-variant-numeric:tabular-nums;}
+  .stat-unit{padding-bottom:2px;color:var(--muted);font:9px/1.5 var(--mono);}
+
+  /* Live X/Y/Z angle strip chart -- same structure as LUCKY DRAW's debug graph
+     (legend bar + scrolling ring-buffer canvas), restyled to this palette. */
+  .graph-wrap{border:1px solid var(--line);background:#f7f8f4;}
+  .graph-legend{display:flex;align-items:center;gap:14px;padding:8px 10px;border-bottom:1px solid var(--line);
+    font:10px var(--mono);letter-spacing:.04em;color:var(--muted);}
+  .graph-legend strong{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums;}
+  .graph-legend .sw{width:8px;height:8px;display:inline-block;margin-right:5px;vertical-align:0;}
+  .graph-legend .graph-hint{margin-left:auto;}
+  #angleGraph{display:block;width:100%;height:140px;}
+
+  .btnrow{display:flex;gap:10px;}
+  .btn{flex:1;min-height:44px;padding:0 14px;border:1px solid var(--line);color:var(--ink);background:transparent;
+    font-size:13px;font-weight:600;cursor:pointer;transition:background-color 140ms ease, transform 140ms ease;}
+  .btn:active{transform:translateY(1px);background:#e4e9df;}
+  .btn.primary{border-color:var(--green);color:#fff;background:var(--green);}
+  .btn.primary:active{background:#124b3e;}
+  .btn:focus-visible{outline:3px solid var(--coral);outline-offset:3px;}
+
+  /* Servo calibration: per-pin 0 -> 180 -> 0 sweep on a ROWS x COLS grid. */
+  .cal-panel{display:none;flex-direction:column;gap:12px;}
+  .cal-panel.show{display:flex;}
+  .cal-grid{display:grid;gap:6px;}
+  .cal-cell{position:relative;aspect-ratio:1;overflow:hidden;padding:0;border:1px solid var(--line);
+    background:#f7f8f4;color:var(--ink);cursor:pointer;font:10px var(--mono);
+    transition:border-color 140ms ease, transform 140ms ease;}
+  .cal-cell:active{transform:translateY(1px);}
+  .cal-cell:focus-visible{outline:3px solid var(--coral);outline-offset:2px;}
+  .cal-fill{position:absolute;left:0;right:0;bottom:0;height:0;background:rgb(237 112 84 / 28%);}
+  .cal-label{position:absolute;left:6px;top:5px;color:var(--muted);font-size:9px;}
+  .cal-angle{position:relative;font-size:12px;font-variant-numeric:tabular-nums;}
+  .cal-cell.is-sweeping{border-color:var(--coral);}
+  .cal-cell.is-done{border-color:var(--teal);}
+  .cal-cell.is-done::after{content:"";position:absolute;right:6px;top:6px;width:6px;height:6px;border-radius:50%;
+    background:var(--teal);}
+  .btn.active{border-color:var(--coral);color:var(--coral);}
+
+  [hidden]{display:none !important;}
+
+  .topbar-left{display:inline-flex;align-items:center;gap:10px;}
+  .topbar-right{display:inline-flex;align-items:center;gap:10px;}
+  .usb-btn{min-height:32px;padding:0 10px;border:0;color:#fff;background:var(--green);cursor:pointer;
+    font-size:11px;font-weight:600;}
+  .usb-btn:active{background:#124b3e;}
+  .usb-btn.on{color:var(--green);background:transparent;border:1px solid var(--green);}
+  .back-btn{width:32px;height:32px;padding:0;border:1px solid var(--line);background:transparent;color:var(--ink);
+    font-size:15px;cursor:pointer;}
+  .back-btn:active{background:#e4e9df;}
+
+  /* landing: mode cards */
+  .mode-card{display:flex;align-items:flex-start;gap:16px;width:100%;padding:18px 16px;text-align:left;
+    border:1px solid var(--line);background:#f7f8f4;color:var(--ink);cursor:pointer;
+    transition:border-color 140ms ease, transform 140ms ease;}
+  .mode-card:active{transform:translateY(1px);border-color:var(--green);}
+  .mode-card:focus-visible{outline:3px solid var(--coral);outline-offset:3px;}
+  .mode-num{width:36px;height:36px;flex:0 0 36px;display:grid;place-items:center;color:var(--paper);
+    background:var(--green);font:12px var(--mono);}
+  .mode-body{display:flex;flex-direction:column;gap:6px;min-width:0;}
+  .mode-title{font-size:18px;font-weight:600;}
+  .mode-desc{color:var(--muted);font-size:12px;line-height:1.5;}
+  .mode-tag{align-self:flex-start;margin-top:4px;padding:3px 7px;border:1px solid var(--line);
+    color:var(--muted);font:9px var(--mono);letter-spacing:.05em;}
+  .mode-tag.ok{border-color:rgb(52 168 145 / 50%);color:var(--teal);}
+  .mode-tag.bad{border-color:rgb(237 112 84 / 50%);color:var(--coral);}
+  .mode-card:disabled{opacity:.55;cursor:not-allowed;}
+
+  /* mode 1: 8x8 range map + pin heights (same palette as the ToF visualizer) */
+  .tof-frame{position:relative;width:min(100%, 360px);margin-inline:auto;aspect-ratio:1;
+    border:1px solid var(--line);background:#e4e9df;}
+  .tof-grid{position:absolute;inset:0;display:grid;}
+  .tof-cell{display:grid;place-items:center;border:1px solid var(--paper);background:#dce2d8;
+    color:var(--ink);font:9px var(--mono);font-variant-numeric:tabular-nums;}
+  .empty-state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:12px;color:var(--muted);pointer-events:none;font:11px var(--mono);background:rgb(228 233 223 / 85%);}
+  .empty-mark{width:48px;height:48px;display:grid;place-items:center;border:1px solid #b8c2b8;color:var(--green);
+    font:14px var(--mono);}
+  .legend{display:flex;align-items:center;gap:8px;padding-top:12px;color:var(--muted);}
+  .legend-label,.legend-value{font:9px var(--mono);letter-spacing:.04em;}
+  .legend-label{color:var(--ink);}
+  .legend-scale{position:relative;height:8px;flex:1;background:linear-gradient(90deg, var(--coral), var(--yellow) 52%, var(--teal));}
+  /* bracket over the slice of the color scale that actually moves the pins */
+  .legend-window{position:absolute;top:-4px;bottom:-4px;border:1.5px solid var(--ink);}
+  .legend-note{display:flex;align-items:center;gap:8px;margin:10px 0 0;color:var(--muted);font:9px var(--mono);letter-spacing:.04em;}
+  .legend-note-mark{width:14px;height:8px;border:1.5px solid var(--ink);}
+  /* phone link (hub / controller) */
+  .link-hub{display:flex;align-items:center;gap:16px;padding:14px;border:1px solid var(--line);background:#f7f8f4;}
+  .hub-qr{width:112px;height:112px;flex:0 0 112px;display:grid;place-items:center;background:#fff;
+    border:1px solid var(--line);color:var(--muted);font:9px var(--mono);}
+  .hub-qr img,.hub-qr canvas{display:block;width:100px !important;height:100px !important;}
+  .hub-info{display:flex;flex-direction:column;gap:6px;min-width:0;}
+  .hub-code-label{color:var(--muted);font:9px var(--mono);letter-spacing:.06em;}
+  .hub-code{font:500 34px/1 var(--mono);letter-spacing:.12em;}
+  .hub-url{color:var(--muted);font:9px var(--mono);word-break:break-all;}
+  .hub-status{color:var(--muted);font:10px/1.5 var(--mono);}
+  .hub-status.ok{color:var(--teal);}
+  .hub-status.bad{color:var(--coral);}
+  .link-ctrl{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);background:#f7f8f4;}
+  .join-row{display:flex;gap:10px;}
+  .join-input{flex:1;min-width:0;min-height:44px;padding:0 12px;border:1px solid var(--line);background:#fff;
+    color:var(--ink);font:500 18px var(--mono);letter-spacing:.14em;text-transform:uppercase;border-radius:0;}
+  .join-input:focus{outline:2px solid var(--green);outline-offset:-1px;}
+  .join-row .btn{flex:0 0 auto;}
+
+  .preset-row{margin-top:12px;}
+  .preset-row .btn{min-height:38px;padding:0 6px;font-size:11px;}
+  .preset-row .btn.active{border-color:var(--green);color:var(--green);}
+  .pin-grid{display:grid;gap:6px;width:min(100%, 360px);margin-inline:auto;}
+  .pin-cell{position:relative;aspect-ratio:1;overflow:hidden;border:1px solid var(--line);background:#f7f8f4;}
+  .pin-fill{position:absolute;left:0;right:0;bottom:0;height:0;background:rgb(27 98 82 / 30%);
+    transition:height 90ms linear;}
+  .pin-val{position:absolute;inset:0;display:grid;place-items:center;font:11px var(--mono);
+    font-variant-numeric:tabular-nums;}
+
+  .fallback{display:none;flex-direction:column;}
+  .fallback.show{display:flex;}
+  .stat-row{min-height:56px;display:flex;flex-direction:column;justify-content:center;gap:8px;
+    border-bottom:1px solid var(--line);color:var(--muted);font-size:12px;}
+  .stat-row-head{display:flex;justify-content:space-between;}
+  .stat-row strong{color:var(--ink);font:12px var(--mono);font-variant-numeric:tabular-nums;}
+  input[type=range]{width:100%;margin:0;accent-color:var(--green);}
+
+  .readout-footer{min-height:42px;display:flex;align-items:center;gap:10px;color:var(--muted);font:10px/1.5 var(--mono);}
+  .readout-footer-mark{width:8px;height:8px;flex:0 0 8px;background:var(--coral);}
+
+  .page-footer{min-height:48px;display:flex;align-items:center;justify-content:space-between;gap:16px;
+    border-top:1px solid var(--line);color:var(--muted);font-size:8px;
+    padding-bottom:env(safe-area-inset-bottom, 0px);}
+  .page-footer i{width:4px;height:4px;display:inline-block;margin:0 7px 2px;border-radius:50%;background:var(--coral);}
+
+  @keyframes arrive{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important;}
+  }
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <span class="topbar-left">
+      <button class="back-btn" id="backBtn" type="button" aria-label="Back to mode select" hidden>←</button>
+      <span class="wordmark"><span class="wordmark-mark">InteractionSensing'26</span> PIN DISPLAY</span>
+    </span>
+    <span class="topbar-right">
+      <span class="connection-state" id="status"><span class="state-dot"></span><span id="statusLabel">Disconnected · retrying</span></span>
+      <button class="usb-btn" id="usbBtn" type="button" hidden>Connect USB</button>
+    </span>
+  </header>
+
+  <!-- ===================== landing: pick a mode ===================== -->
+  <div class="view" id="viewHome">
+    <section class="intro">
+      <p class="eyebrow">SELECT MODE <span>·</span> 4 × 4 PIN MATRIX</p>
+      <h1>Pin display<span class="title-period">.</span></h1>
+    </section>
+    <section class="visual-layout">
+      <button class="mode-card" id="modeTofBtn" type="button">
+        <span class="mode-num">01</span>
+        <span class="mode-body">
+          <span class="mode-title">ToF → Pin</span>
+          <span class="mode-desc">Maps the 8×8 ToF depth field onto the 4×4 pin heights. The closer an object, the higher the pin.</span>
+          <span class="mode-tag" id="tofTag">VL53L5CX · CHECKING</span>
+        </span>
+      </button>
+      <button class="mode-card" id="modeTiltBtn" type="button">
+        <span class="mode-num">02</span>
+        <span class="mode-body">
+          <span class="mode-title">iPhone Tilt → Pin</span>
+          <span class="mode-desc">Tilts the pin surface like water in a glass, following the iPhone's orientation.</span>
+          <span class="mode-tag">IMU · TOF OFF</span>
+        </span>
+      </button>
+      <div class="readout-footer">
+        <span class="readout-footer-mark"></span>
+        <span id="homeNote">Select a mode to start driving the pin matrix.</span>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================== mode 1: ToF -> pins ===================== -->
+  <div class="view" id="viewTof" hidden>
+    <section class="intro">
+      <p class="eyebrow">VL53L5CX <span>·</span> 8 × 8 → 4 × 4</p>
+      <h1>Distance field<span class="title-period">.</span></h1>
+    </section>
+    <section class="visual-layout">
+      <div>
+        <div class="matrix-heading">
+          <span>RANGE MAP</span>
+          <span id="tofFrameLabel">AWAITING FRAME</span>
+        </div>
+        <div class="tof-frame">
+          <div class="tof-grid" id="tofGrid"></div>
+          <div class="empty-state" id="tofEmpty">
+            <span class="empty-mark">64</span>
+            <span id="tofEmptyLabel">Waiting for sensor data</span>
+          </div>
+        </div>
+        <div class="legend">
+          <span class="legend-label">NEAR</span>
+          <span class="legend-value" id="legendNear">200 mm</span>
+          <div class="legend-scale" aria-hidden="true"><span class="legend-window" id="legendWindow"></span></div>
+          <span class="legend-value" id="legendFar">4000 mm</span>
+          <span class="legend-label">FAR</span>
+        </div>
+        <p class="legend-note"><span class="legend-note-mark"></span><span id="legendNote">PIN WINDOW 100 – 600 MM</span></p>
+      </div>
+
+      <div>
+        <div class="matrix-heading">
+          <span>PIN WINDOW</span>
+          <span id="winSpanLabel">SPAN 500 MM</span>
+        </div>
+        <label class="stat-row">
+          <span class="stat-row-head"><span>Near · pin fully up</span><strong><span id="winNearVal">100</span> mm</strong></span>
+          <input type="range" id="winNear" min="0" max="4000" step="10" value="100">
+        </label>
+        <label class="stat-row">
+          <span class="stat-row-head"><span>Far · pin fully down</span><strong><span id="winFarVal">600</span> mm</strong></span>
+          <input type="range" id="winFar" min="0" max="4000" step="10" value="600">
+        </label>
+        <div class="btnrow preset-row">
+          <button class="btn" type="button" data-near="100" data-far="600">Hand · 0.1–0.6m</button>
+          <button class="btn" type="button" data-near="300" data-far="1500">Body · 0.3–1.5m</button>
+          <button class="btn" type="button" data-near="200" data-far="4000">Room · 0.2–4m</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="matrix-heading">
+          <span>PIN HEIGHT</span>
+          <span id="pinMaxLabel">0 – 38.9 MM</span>
+        </div>
+        <div class="pin-grid" id="pinGrid"></div>
+      </div>
+
+      <div class="readout-section">
+        <p class="eyebrow">LIVE READOUT</p>
+        <div class="stat-pair">
+          <div class="primary-stat"><span class="stat-value" id="tofNearest">--</span><span class="stat-unit">mm<br>NEAREST</span></div>
+          <div class="primary-stat"><span class="stat-value" id="tofValid">--</span><span class="stat-unit">/ 64<br>ZONES</span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================== mode 2: iPhone tilt ===================== -->
+  <div class="view" id="viewTilt" hidden>
+  <section class="intro">
+    <p class="eyebrow">IPHONE TILT <span>·</span> REAL-TIME</p>
+    <h1>Tilt field<span class="title-period">.</span></h1>
+  </section>
+
+  <section class="visual-layout">
+    <!-- Phone link (LUCKY DRAW pattern, PeerJS/WebRTC): the device wired to
+         the ESP32 is the HUB (spectates + relays to USB), the iPhone is the
+         CONTROLLER. Needs internet + an HTTPS-hosted page on both ends. -->
+    <div class="link-panel" id="linkPanel">
+      <div class="matrix-heading">
+        <span>PHONE LINK</span>
+        <span id="linkRole">--</span>
+      </div>
+      <div class="link-hub" id="hubBlock" hidden>
+        <div class="hub-qr" id="hubQr" aria-label="QR code to join from the phone"></div>
+        <div class="hub-info">
+          <span class="hub-code-label">ROOM CODE</span>
+          <span class="hub-code" id="hubCode">····</span>
+          <span class="hub-url" id="hubUrl"></span>
+          <span class="hub-status" id="hubStatus">Starting…</span>
+        </div>
+      </div>
+      <div class="link-ctrl" id="ctrlBlock" hidden>
+        <div class="join-row">
+          <input class="join-input" id="joinCode" type="text" inputmode="text" autocapitalize="characters"
+                 autocomplete="off" maxlength="6" placeholder="CODE" aria-label="Room code from the laptop">
+          <button class="btn primary" id="joinBtn" type="button">Join laptop</button>
+        </div>
+        <span class="hub-status" id="ctrlStatus">Enter the code shown on the laptop, or scan its QR.</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="matrix-heading">
+        <span>LEVEL</span>
+        <span>±30°</span>
+      </div>
+      <div class="level" id="level">
+        <div class="level-ring"></div>
+        <div class="bubble" id="bubble"></div>
+      </div>
+    </div>
+
+    <div class="readout-section">
+      <p class="eyebrow">LIVE READOUT</p>
+      <div class="stat-pair">
+        <div class="primary-stat"><span class="stat-value" id="rollStat">0.0</span><span class="stat-unit">deg<br>ROLL</span></div>
+        <div class="primary-stat"><span class="stat-value" id="pitchStat">0.0</span><span class="stat-unit">deg<br>PITCH</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="matrix-heading">
+        <span>ANGLE · X / Y / Z</span>
+        <span>±180°</span>
+      </div>
+      <div class="graph-wrap">
+        <div class="graph-legend">
+          <span><i class="sw" style="background:#ed7054"></i>X <strong id="xVal">--</strong></span>
+          <span><i class="sw" style="background:#1b6252"></i>Y <strong id="yVal">--</strong></span>
+          <span><i class="sw" style="background:#3b6fd4"></i>Z <strong id="zVal">--</strong></span>
+          <span class="graph-hint">deg</span>
+        </div>
+        <canvas id="angleGraph" height="140"></canvas>
+      </div>
+    </div>
+
+    <div class="btnrow">
+      <button class="btn primary" id="startBtn" type="button">Start sensor</button>
+      <button class="btn" id="tareBtn" type="button">Set level</button>
+    </div>
+
+    <div class="fallback" id="fallbackPanel">
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Roll</span><strong><span id="rollVal">0</span>°</strong></span>
+        <input type="range" id="rollSlider" min="-30" max="30" value="0" step="1">
+      </label>
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Pitch</span><strong><span id="pitchVal">0</span>°</strong></span>
+        <input type="range" id="pitchSlider" min="-30" max="30" value="0" step="1">
+      </label>
+    </div>
+
+    <div class="readout-footer">
+      <span class="readout-footer-mark"></span>
+      <span id="note">Tap Start sensor to request motion permission.</span>
+    </div>
+  </section>
+  </div>
+
+  <!-- ============ servo calibration (shared by both modes) ============ -->
+  <section class="visual-layout" id="calSection" hidden>
+    <div class="btnrow">
+      <button class="btn" id="calBtn" type="button">Servo calibration</button>
+    </div>
+
+    <div class="cal-panel" id="calPanel">
+      <div class="matrix-heading">
+        <span>SERVO CALIBRATION</span>
+        <span id="calStatus">ALL AT 0°</span>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="btnrow">
+        <button class="btn" id="zeroBtn" type="button">All to 0°</button>
+        <button class="btn primary" id="calExitBtn" type="button">Exit calibration</button>
+      </div>
+    </div>
+  </section>
+
+  <footer class="page-footer">
+    <span>ESP32-S3 · 4 × 4 SCOTCH-YOKE</span>
+    <span id="footerRight">WS :81 <i></i> SELECT MODE</span>
+  </footer>
+</main>
+
+<script>
+(function(){
+  var statusEl = document.getElementById('status');
+  var statusLabel = document.getElementById('statusLabel');
+  var levelEl = document.getElementById('level');
+  var bubble = document.getElementById('bubble');
+  var rollStat = document.getElementById('rollStat');
+  var pitchStat = document.getElementById('pitchStat');
+  var startBtn = document.getElementById('startBtn');
+  var tareBtn = document.getElementById('tareBtn');
+  var fallbackPanel = document.getElementById('fallbackPanel');
+  var rollSlider = document.getElementById('rollSlider');
+  var pitchSlider = document.getElementById('pitchSlider');
+  var rollVal = document.getElementById('rollVal');
+  var pitchVal = document.getElementById('pitchVal');
+  var noteEl = document.getElementById('note');
+
+  var socket = null, wsReady = false;
+  var smRoll = 0, smPitch = 0;
+  var tareRoll = 0, tarePitch = 0;
+  var lastSendAt = 0;
+  var SEND_INTERVAL_MS = 33; // ~30Hz -- plenty for a 60Hz physics loop on the ESP32 side
+
+  function connectWS(){
+    // An HTTPS-hosted page (the phone-link setup) can't open ws:// at all
+    // (mixed content) -- it reaches the ESP32 via USB or the laptop hub instead.
+    if (location.protocol === 'https:') return;
+    // Served from the ESP32 itself, so location.hostname is always right --
+    // no IP to hardcode even if WIFI_AP_SSID/IP ever changes.
+    // Opened as a local file (file://, no hostname) or from a dev server on
+    // the PC -- fall back to the ESP32's AP address so it still connects
+    // as long as this computer is joined to the PinDisplay Wi-Fi.
+    var host = location.protocol === 'file:' || !location.hostname ||
+      location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? '192.168.4.1' : location.hostname;
+    var url = 'ws://' + host + ':81/';
+    socket = new WebSocket(url);
+    socket.onopen = function(){ wsReady = true; renderStatus(); };
+    socket.onclose = function(){ wsReady = false; renderStatus(); setTimeout(connectWS, 1500); };
+    socket.onerror = function(){ wsReady = false; };
+    socket.onmessage = function(ev){
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (err) { return; }
+      onServerMessage(msg);
+    };
+  }
+
+  /* ---------- servo calibration ---------- */
+  // Firmware owns the state: it parks every servo at raw 0deg in cal mode,
+  // runs the 0 -> 180 -> 0 sweep itself and streams {"sw":pin,"a":deg} back.
+  var calBtn = document.getElementById('calBtn');
+  var calPanel = document.getElementById('calPanel');
+  var calGrid = document.getElementById('calGrid');
+  var calStatus = document.getElementById('calStatus');
+  var zeroBtn = document.getElementById('zeroBtn');
+  var calExitBtn = document.getElementById('calExitBtn');
+  var gridRows = 4, gridCols = 4, crankR = 19.441;
+  var calMode = false, sweepingPin = -1;
+  var calCells = [];
+
+  // One command, one link: USB if it's open (PC debugging), else Wi-Fi.
+  // Sending on both would run each command twice on the ESP32.
+  function wsSend(obj){
+    var line = JSON.stringify(obj);
+    if (serialWriter) { serialWriter.write(new TextEncoder().encode(line + '\n')).catch(function(){}); return; }
+    if (socket && wsReady) socket.send(line);
+  }
+
+  /* ---------- USB serial link (PC Chrome/Edge, Web Serial) ---------- */
+  // Same JSON protocol as the WebSocket, one message per line. Web Serial
+  // needs a secure context, so it shows up when this file is opened locally
+  // (file://) on a PC -- not on http://192.168.4.1 and never on iPhone.
+  var SERIAL_BAUD = 115200;  // = SERIAL_BAUD in config.h
+  var usbBtn = document.getElementById('usbBtn');
+  var serialPort = null, serialReader = null, serialWriter = null, serialHelloSeen = false;
+
+  async function openSerial(){
+    try {
+      serialPort = await navigator.serial.requestPort();
+      await serialPort.open({ baudRate: SERIAL_BAUD });
+      // On the DevKit's UART port, DTR/RTS drive the EN/IO0 auto-reset
+      // circuit -- left asserted they can hold the chip in reset or the ROM
+      // bootloader (only the "ESP-ROM:..." banner ever arrives). Release both
+      // so it boots normally; the hello retry below covers the reboot.
+      try { await serialPort.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
+    } catch (err) {
+      serialPort = null;
+      return;
+    }
+    serialWriter = serialPort.writable.getWriter();
+    serialHelloSeen = false;
+    renderStatus();
+    readSerial();
+    // The port open may reboot the ESP32 (and ToF init takes a few seconds),
+    // so keep asking until a hello actually comes back.
+    (function askHello(){
+      if (!serialWriter || serialHelloSeen) return;
+      wsSend({ hello: 1 });
+      setTimeout(askHello, 1000);
+    })();
+  }
+
+  async function readSerial(){
+    var decoder = new TextDecoder(), buf = '';
+    try {
+      serialReader = serialPort.readable.getReader();
+      while (true){
+        var res = await serialReader.read();
+        if (res.done) break;
+        buf += decoder.decode(res.value, { stream: true });
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        for (var i = 0; i < lines.length; i++){
+          var line = lines[i].trim();
+          if (line.charAt(0) !== '{') {
+            if (line) console.log('[esp32]', line);  // boot / [tof] health logs
+            continue;
+          }
+          var msg;
+          try { msg = JSON.parse(line); } catch (err) { continue; }
+          if (msg.rows) serialHelloSeen = true;
+          onServerMessage(msg);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      closeSerial();
+    }
+  }
+
+  async function closeSerial(){
+    var port = serialPort;
+    serialPort = null;
+    try { if (serialReader) { await serialReader.cancel(); serialReader.releaseLock(); } } catch (err) {}
+    try { if (serialWriter) serialWriter.releaseLock(); } catch (err) {}
+    serialReader = serialWriter = null;
+    try { if (port) await port.close(); } catch (err) {}
+    renderStatus();
+  }
+
+  if ('serial' in navigator){
+    usbBtn.hidden = false;
+    usbBtn.addEventListener('click', function(){ if (serialWriter) closeSerial(); else openSerial(); });
+  }
+
+  function strokeMM(deg){ return crankR * (1 - Math.cos(deg * Math.PI / 180)); }
+
+  function buildCalGrid(){
+    calGrid.innerHTML = '';
+    calGrid.style.gridTemplateColumns = 'repeat(' + gridCols + ', minmax(0, 1fr))';
+    calCells = [];
+    for (var i = 0; i < gridRows * gridCols; i++){
+      var r = Math.floor(i / gridCols), c = i % gridCols;
+      var cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'cal-cell';
+      cell.innerHTML = '<span class="cal-fill"></span><span class="cal-label">R' + r + 'C' + c +
+        ' · ' + i + '</span><span class="cal-angle">0°</span>';
+      cell.addEventListener('click', (function(pin){
+        return function(){ wsSend({ sweep: pin }); };
+      })(i));
+      calGrid.appendChild(cell);
+      calCells.push(cell);
+    }
+  }
+
+  function setCellAngle(pin, deg){
+    var cell = calCells[pin];
+    if (!cell) return;
+    cell.querySelector('.cal-angle').textContent = deg + '°';
+    // fill height = actual stroke fraction (scotch yoke), not raw angle
+    cell.querySelector('.cal-fill').style.height = (strokeMM(deg) / (2 * crankR) * 100) + '%';
+  }
+
+  function resetAllCells(){
+    for (var i = 0; i < calCells.length; i++){
+      setCellAngle(i, 0);
+      calCells[i].classList.remove('is-sweeping');
+    }
+  }
+
+  function renderCal(){
+    calPanel.classList.toggle('show', calMode);
+    calBtn.classList.toggle('active', calMode);
+    calBtn.textContent = calMode ? 'Calibrating · pin control paused' : 'Servo calibration';
+    if (!calMode) calStatus.textContent = 'ALL AT 0°';
+  }
+
+  function onServerMessage(msg){
+    if (msg.rows && msg.cols){
+      // hello on connect: matrix shape, crank, ToF availability/range
+      gridRows = msg.rows; gridCols = msg.cols;
+      if (msg.crank) crankR = msg.crank;
+      if (msg.tofGrid) tofGridSize = msg.tofGrid;
+      if (msg.near) tofNear = msg.near;
+      if (msg.far) tofFar = msg.far;
+      if (msg.visNear) visNear = msg.visNear;
+      if (msg.visFar) visFar = msg.visFar;
+      if (msg.winMax) { winNearEl.max = winFarEl.max = msg.winMax; }
+      tofOk = msg.tofOk === undefined ? null : !!msg.tofOk;
+      buildCalGrid();
+      buildTofGrid();
+      buildPinGrid();
+      renderTofAvailability();
+      renderWindow();
+    } else if (msg.near !== undefined && msg.far !== undefined){
+      // window changed (by this or another page) -- don't fight an active drag
+      if (!winDragging){ tofNear = msg.near; tofFar = msg.far; renderWindow(); }
+    }
+    if (msg.mode !== undefined) showView(msg.mode);
+    if (msg.tof) onTofFrame(msg.tof, msg.h || []);
+    if (msg.cal !== undefined){
+      calMode = !!msg.cal;
+      sweepingPin = -1;
+      resetAllCells();
+      renderCal();
+    }
+    if (msg.sw !== undefined){
+      if (msg.sw < 0){
+        if (sweepingPin >= 0 && calCells[sweepingPin]){
+          calCells[sweepingPin].classList.remove('is-sweeping');
+          calCells[sweepingPin].classList.add('is-done');
+          setCellAngle(sweepingPin, 0);
+        }
+        sweepingPin = -1;
+        calStatus.textContent = 'ALL AT 0°';
+        return;
+      }
+      if (sweepingPin !== msg.sw && sweepingPin >= 0 && calCells[sweepingPin]){
+        calCells[sweepingPin].classList.remove('is-sweeping');
+        setCellAngle(sweepingPin, 0);
+      }
+      sweepingPin = msg.sw;
+      if (calCells[msg.sw]) calCells[msg.sw].classList.add('is-sweeping');
+      setCellAngle(msg.sw, msg.a);
+      calStatus.textContent = 'PIN ' + msg.sw + ' · ' + msg.a + '° · ' + strokeMM(msg.a).toFixed(1) + ' MM';
+    }
+  }
+
+  calBtn.addEventListener('click', function(){ wsSend({ cal: calMode ? 0 : 1 }); });
+  calExitBtn.addEventListener('click', function(){ wsSend({ cal: 0 }); });
+  zeroBtn.addEventListener('click', function(){
+    // An interrupted sweep isn't a finished check -- drop it locally so the
+    // firmware's {"sw":-1} reply doesn't mark it done.
+    if (sweepingPin >= 0 && calCells[sweepingPin]) calCells[sweepingPin].classList.remove('is-sweeping');
+    sweepingPin = -1;
+    resetAllCells();
+    wsSend({ zero: 1 });
+  });
+  buildCalGrid();
+
+  /* ---------- modes: landing / 1 ToF / 2 tilt ---------- */
+  // The ESP32 owns the active mode (it's what drives the pins), so the page
+  // follows its {"mode":n} broadcasts. Buttons also switch the view locally
+  // right away so it doesn't feel laggy, and so the page can be previewed
+  // without the device.
+  var views = { 0: document.getElementById('viewHome'), 1: document.getElementById('viewTof'), 2: document.getElementById('viewTilt') };
+  var calSection = document.getElementById('calSection');
+  var backBtn = document.getElementById('backBtn');
+  var footerRight = document.getElementById('footerRight');
+  var modeTofBtn = document.getElementById('modeTofBtn');
+  var modeTiltBtn = document.getElementById('modeTiltBtn');
+  var tofTag = document.getElementById('tofTag');
+  var homeNote = document.getElementById('homeNote');
+  var currentMode = 0;
+  var FOOTER = { 0: 'SELECT MODE', 1: 'TOF 15 HZ', 2: 'TILT 30 HZ' };
+
+  function showView(m){
+    if (!views[m]) return;
+    var changed = m !== currentMode;
+    currentMode = m;
+    for (var k in views) views[k].hidden = (+k !== m);
+    calSection.hidden = (m === 0);
+    backBtn.hidden = (m === 0);
+    footerRight.innerHTML = 'WS :81 <i></i> ' + FOOTER[m];
+    if (m === 2){
+      resizeGraph();  // canvas had 0 width while its view was hidden
+      renderLink();   // hub vs controller panel (may also hide calibration)
+    }
+    if (changed) window.scrollTo(0, 0);
+  }
+
+  function selectMode(m){
+    if (!linkReady()){
+      homeNote.textContent = 'Not connected to the ESP32 · join the PinDisplay Wi-Fi or connect USB';
+    }
+    showView(m);
+    wsSend({ mode: m });
+  }
+  modeTofBtn.addEventListener('click', function(){ selectMode(1); });
+  modeTiltBtn.addEventListener('click', function(){ selectMode(2); });
+  backBtn.addEventListener('click', function(){ selectMode(0); });
+
+  /* ---------- mode 1: ToF range map + pin heights ---------- */
+  var tofGridEl = document.getElementById('tofGrid');
+  var pinGridEl = document.getElementById('pinGrid');
+  var tofEmpty = document.getElementById('tofEmpty');
+  var tofEmptyLabel = document.getElementById('tofEmptyLabel');
+  var tofFrameLabel = document.getElementById('tofFrameLabel');
+  var tofNearestEl = document.getElementById('tofNearest');
+  var tofValidEl = document.getElementById('tofValid');
+  // tofNear/tofFar = pin window (100-600); visNear/visFar = range-map colors.
+  var tofGridSize = 8, tofNear = 100, tofFar = 600, visNear = 200, visFar = 4000, tofOk = null;
+  var tofCells = [], pinCells = [], tofFrames = 0, lastTofAt = 0;
+
+  function buildTofGrid(){
+    tofGridEl.innerHTML = '';
+    tofGridEl.style.gridTemplateColumns = 'repeat(' + tofGridSize + ', minmax(0, 1fr))';
+    tofCells = [];
+    for (var i = 0; i < tofGridSize * tofGridSize; i++){
+      var cell = document.createElement('div');
+      cell.className = 'tof-cell';
+      tofGridEl.appendChild(cell);
+      tofCells.push(cell);
+    }
+    renderLegend();
+  }
+
+  function renderLegend(){
+    document.getElementById('legendNear').textContent = visNear + ' mm';
+    document.getElementById('legendFar').textContent = visFar + ' mm';
+    // Bracket the pin window on the color scale (clamped -- it can start
+    // below visNear, e.g. 100 vs 200).
+    var w = document.getElementById('legendWindow');
+    var a = Math.max(0, (tofNear - visNear) / (visFar - visNear));
+    var b = Math.min(1, (tofFar - visNear) / (visFar - visNear));
+    w.style.left = (a * 100) + '%';
+    w.style.width = (Math.max(0, b - a) * 100) + '%';
+    document.getElementById('legendNote').textContent = 'PIN WINDOW ' + tofNear + ' – ' + tofFar + ' MM';
+  }
+
+  function buildPinGrid(){
+    pinGridEl.innerHTML = '';
+    pinGridEl.style.gridTemplateColumns = 'repeat(' + gridCols + ', minmax(0, 1fr))';
+    pinCells = [];
+    for (var i = 0; i < gridRows * gridCols; i++){
+      var cell = document.createElement('div');
+      cell.className = 'pin-cell';
+      cell.innerHTML = '<span class="pin-fill"></span><span class="pin-val">0.0</span>';
+      pinGridEl.appendChild(cell);
+      pinCells.push(cell);
+    }
+    document.getElementById('pinMaxLabel').textContent = '0 – ' + (2 * crankR).toFixed(1) + ' MM';
+  }
+
+  function renderTofAvailability(){
+    tofTag.classList.toggle('ok', tofOk === true);
+    tofTag.classList.toggle('bad', tofOk === false);
+    tofTag.textContent = tofOk === true ? 'VL53L5CX · READY' : tofOk === false ? 'VL53L5CX · NOT FOUND' : 'VL53L5CX · CHECKING';
+    modeTofBtn.disabled = tofOk === false;
+    if (tofOk === false) tofEmptyLabel.textContent = 'ToF sensor not found · check wiring and reboot the ESP32';
+  }
+
+  // Same coral -> yellow -> teal ramp and 200-4000mm span as the ToF
+  // visualizer -- independent of the narrower pin window.
+  var RAMP = [[237,112,84],[242,215,119],[52,168,145]];
+  function distanceColor(d){
+    var t = Math.max(0, Math.min(1, (d - visNear) / (visFar - visNear)));
+    var a, b, u;
+    if (t < 0.52){ a = RAMP[0]; b = RAMP[1]; u = t / 0.52; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.52) / 0.48; }
+    return 'rgb(' + Math.round(a[0] + (b[0]-a[0])*u) + ',' + Math.round(a[1] + (b[1]-a[1])*u) + ',' + Math.round(a[2] + (b[2]-a[2])*u) + ')';
+  }
+
+  function onTofFrame(dist, heights){
+    tofFrames++;
+    lastTofAt = performance.now();
+    tofEmpty.hidden = true;
+    tofFrameLabel.textContent = 'FRAME ' + String(tofFrames).padStart(5, '0');
+    var nearest = Infinity, valid = 0;
+    for (var i = 0; i < tofCells.length && i < dist.length; i++){
+      var d = dist[i];
+      if (d > 0){
+        valid++;
+        if (d < nearest) nearest = d;
+        tofCells[i].style.background = distanceColor(d);
+        tofCells[i].textContent = d;
+      } else {
+        tofCells[i].style.background = '';
+        tofCells[i].textContent = '';
+      }
+    }
+    tofNearestEl.textContent = valid ? nearest : '--';
+    tofValidEl.textContent = valid;
+    var maxH = 2 * crankR;
+    for (var j = 0; j < pinCells.length && j < heights.length; j++){
+      var h = heights[j] / 10;
+      pinCells[j].querySelector('.pin-fill').style.height = (h / maxH * 100) + '%';
+      pinCells[j].querySelector('.pin-val').textContent = h.toFixed(1);
+    }
+  }
+
+  // No frame for a while -> say so (firmware also drops the pins on its side).
+  setInterval(function(){
+    if (currentMode !== 1 || calMode) return;
+    if (tofFrames && performance.now() - lastTofAt > 1500){
+      tofEmpty.hidden = false;
+      tofEmptyLabel.textContent = 'Signal lost · waiting for sensor data';
+    }
+  }, 500);
+
+  /* ---------- pin window sliders (which distances move the pins) ---------- */
+  // Near = distance that pushes a pin fully up, Far = distance at which it's
+  // fully down. The ESP32 clamps, applies live, and saves to flash.
+  var winNearEl = document.getElementById('winNear');
+  var winFarEl = document.getElementById('winFar');
+  var winNearVal = document.getElementById('winNearVal');
+  var winFarVal = document.getElementById('winFarVal');
+  var winSpanLabel = document.getElementById('winSpanLabel');
+  var presetBtns = document.querySelectorAll('.preset-row .btn');
+  var WIN_GAP = 50;  // = TOF_WIN_MIN_GAP_MM
+  var winDragging = false, winSendTimer = null, lastWinSentAt = 0;
+
+  function renderWindow(){
+    winNearEl.value = tofNear; winFarEl.value = tofFar;
+    winNearVal.textContent = tofNear; winFarVal.textContent = tofFar;
+    winSpanLabel.textContent = 'SPAN ' + (tofFar - tofNear) + ' MM';
+    for (var i = 0; i < presetBtns.length; i++){
+      var b = presetBtns[i];
+      b.classList.toggle('active', +b.dataset.near === tofNear && +b.dataset.far === tofFar);
+    }
+    renderLegend();  // re-places the bracket on the color bar + note
+  }
+
+  // ~12Hz while dragging, plus a final send so the last value always lands.
+  function sendWindow(){
+    clearTimeout(winSendTimer);
+    var wait = 80 - (performance.now() - lastWinSentAt);
+    if (wait > 0){ winSendTimer = setTimeout(sendWindow, wait); return; }
+    lastWinSentAt = performance.now();
+    wsSend({ near: tofNear, far: tofFar });
+  }
+
+  function onWinInput(e){
+    winDragging = true;
+    var n = +winNearEl.value, f = +winFarEl.value;
+    // keep near < far by pushing the *other* thumb, so dragging feels natural
+    if (e.target === winNearEl && n > f - WIN_GAP) f = Math.min(+winFarEl.max, n + WIN_GAP);
+    if (e.target === winFarEl && f < n + WIN_GAP) n = Math.max(0, f - WIN_GAP);
+    tofNear = n; tofFar = f;
+    renderWindow();
+    sendWindow();
+  }
+  function endWinDrag(){ winDragging = false; }
+
+  [winNearEl, winFarEl].forEach(function(el){
+    el.addEventListener('input', onWinInput);
+    el.addEventListener('change', endWinDrag);
+  });
+  for (var pi = 0; pi < presetBtns.length; pi++){
+    presetBtns[pi].addEventListener('click', function(){
+      tofNear = +this.dataset.near; tofFar = +this.dataset.far;
+      renderWindow();
+      wsSend({ near: tofNear, far: tofFar });
+    });
+  }
+
+  buildTofGrid();
+  buildPinGrid();
+  renderWindow();
+
+  function linkReady(){ return wsReady || !!serialWriter; }
+
+  var HOME_NOTE = 'Select a mode to start driving the pin matrix.';
+
+  function renderStatus(){
+    var usb = !!serialWriter;
+    // Clear a stale "not connected" warning once either link comes up.
+    if (linkReady()) homeNote.textContent = HOME_NOTE;
+    var ctrl = !!(ctrlConn && ctrlConn.open);
+    statusLabel.textContent = usb && wsReady ? 'USB + Wi-Fi connected' : usb ? 'USB connected' :
+      wsReady ? 'Wi-Fi connected' : ctrl ? 'Linked to laptop' :
+      location.protocol === 'https:' ? 'No ESP32 link' : 'Disconnected · retrying';
+    statusEl.classList.toggle('is-connected', linkReady() || ctrl);
+    renderLink();
+    usbBtn.textContent = usb ? 'Disconnect USB' : 'Connect USB';
+    usbBtn.classList.toggle('on', usb);
+  }
+
+  function updateBubble(roll, pitch){
+    var maxDeg = 30;
+    // Travel scales with the frame, which is fluid (up to 360px) rather than fixed.
+    var travel = levelEl.clientWidth / 2 - 15 - 8;
+    var x = Math.max(-1, Math.min(1, roll / maxDeg)) * travel;
+    var y = Math.max(-1, Math.min(1, pitch / maxDeg)) * travel;
+    bubble.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+    rollStat.textContent = roll.toFixed(1);
+    pitchStat.textContent = pitch.toFixed(1);
+  }
+
+  function sendTilt(roll, pitch){
+    var now = performance.now();
+    updateBubble(roll, pitch);
+    if (now - lastSendAt < SEND_INTERVAL_MS) return;
+    lastSendAt = now;
+    var r = Math.round(roll * 10) / 10, p = Math.round(pitch * 10) / 10;
+    // Controller phone -> laptop hub (which forwards to the ESP32). Raw
+    // x/y/z ride along so the hub's angle graph matches the phone's.
+    if (ctrlConn && ctrlConn.open){
+      ctrlConn.send({ t: 'tilt', r: r, p: p,
+        x: curX === null ? 0 : Math.round(curX * 10) / 10,
+        y: curY === null ? 0 : Math.round(curY * 10) / 10,
+        z: curZ === null ? 0 : Math.round(curZ * 10) / 10 });
+      return;
+    }
+    if (linkReady() && !calMode && currentMode === 2){
+      wsSend({ r: r, p: p });
+    }
+  }
+
+  /* ---------- live X/Y/Z angle graph (LUCKY DRAW debug-graph pattern) ---------- */
+  // X = beta (front/back), Y = gamma (left/right), Z = alpha (compass heading,
+  // wrapped to -180..180 so it shares the axis). Raw, untared, unsmoothed --
+  // this shows what the sensor actually reports.
+  var graphCanvas = document.getElementById('angleGraph');
+  var graphCtx = graphCanvas.getContext('2d');
+  var xValEl = document.getElementById('xVal');
+  var yValEl = document.getElementById('yVal');
+  var zValEl = document.getElementById('zVal');
+  var GRAPH_LEN = 240;      // samples on screen (~4s at 60fps)
+  var GRAPH_RANGE = 180;    // deg, top-to-bottom = +/-180
+  var graphBuf = { x: [], y: [], z: [] };
+  var curX = null, curY = null, curZ = null;
+  var sensorActive = false, lastOrientationAt = 0;
+
+  function resizeGraph(){
+    var dpr = window.devicePixelRatio || 1;
+    var rect = graphCanvas.getBoundingClientRect();
+    if (rect.width){
+      graphCanvas.width = Math.round(rect.width * dpr);
+      graphCanvas.height = Math.round(140 * dpr);
+    }
+  }
+  window.addEventListener('resize', resizeGraph);
+
+  function drawGraph(){
+    var w = graphCanvas.width, h = graphCanvas.height;
+    if (!w || !h) return;
+    var dpr = window.devicePixelRatio || 1;
+    var midY = h / 2;
+    graphCtx.clearRect(0, 0, w, h);
+    // grid: 0 solid, +/-90 dashed
+    graphCtx.lineWidth = dpr;
+    graphCtx.strokeStyle = '#cbd2c8';
+    graphCtx.beginPath(); graphCtx.moveTo(0, midY); graphCtx.lineTo(w, midY); graphCtx.stroke();
+    graphCtx.setLineDash([4 * dpr, 4 * dpr]);
+    [90, -90].forEach(function(v){
+      var y = midY - (v / GRAPH_RANGE) * midY;
+      graphCtx.beginPath(); graphCtx.moveTo(0, y); graphCtx.lineTo(w, y); graphCtx.stroke();
+    });
+    graphCtx.setLineDash([]);
+    graphCtx.fillStyle = '#748078';
+    graphCtx.font = (9 * dpr) + 'px ui-monospace, Menlo, monospace';
+    graphCtx.fillText('+90', 4 * dpr, midY - midY / 2 - 3 * dpr);
+    graphCtx.fillText('-90', 4 * dpr, midY + midY / 2 - 3 * dpr);
+
+    function trace(arr, color){
+      if (arr.length < 2) return;
+      graphCtx.strokeStyle = color;
+      graphCtx.lineWidth = 1.75 * dpr;
+      graphCtx.lineJoin = 'round';
+      graphCtx.beginPath();
+      var prev = null;
+      for (var i = 0; i < arr.length; i++){
+        var x = (i / (GRAPH_LEN - 1)) * w;
+        var y = midY - (arr[i] / GRAPH_RANGE) * midY;
+        // break the line on a +/-180 wrap instead of drawing a full-height spike
+        if (i === 0 || Math.abs(arr[i] - prev) > 180) graphCtx.moveTo(x, y); else graphCtx.lineTo(x, y);
+        prev = arr[i];
+      }
+      graphCtx.stroke();
+    }
+    trace(graphBuf.x, '#ed7054');
+    trace(graphBuf.y, '#1b6252');
+    trace(graphBuf.z, '#3b6fd4');
+
+    if (sensorActive && performance.now() - lastOrientationAt > 500){
+      graphCtx.fillStyle = '#ed7054';
+      graphCtx.font = '600 ' + (11 * dpr) + 'px ui-monospace, Menlo, monospace';
+      graphCtx.fillText('SIGNAL LOST', w - 80 * dpr, 16 * dpr);
+    }
+  }
+
+  // Sample once per frame from the latest values, so the time axis stays
+  // uniform regardless of how often the sensor (or a slider) fires.
+  function graphLoop(){
+    if (curX !== null){
+      graphBuf.x.push(curX); graphBuf.y.push(curY); graphBuf.z.push(curZ);
+      if (graphBuf.x.length > GRAPH_LEN){ graphBuf.x.shift(); graphBuf.y.shift(); graphBuf.z.shift(); }
+      xValEl.textContent = curX.toFixed(1);
+      yValEl.textContent = curY.toFixed(1);
+      zValEl.textContent = curZ.toFixed(1);
+    }
+    drawGraph();
+    requestAnimationFrame(graphLoop);
+  }
+  resizeGraph();
+  requestAnimationFrame(graphLoop);
+
+  // Light smoothing only -- same light-touch ratio used throughout the
+  // LUCKY DRAW project: enough to tame raw sensor jitter without adding
+  // noticeable lag (the ESP32-side spring in config.h is what supplies the
+  // deliberate "water" lag on top of this).
+  function onOrientation(e){
+    if (e.beta === null || e.gamma === null) return;
+    sensorActive = true;
+    lastOrientationAt = performance.now();
+    var a = e.alpha || 0;
+    curX = e.beta; curY = e.gamma; curZ = a > 180 ? a - 360 : a;
+    smRoll = smRoll * 0.75 + (e.gamma || 0) * 0.25;
+    smPitch = smPitch * 0.75 + (e.beta || 0) * 0.25;
+    sendTilt(smRoll - tareRoll, smPitch - tarePitch);
+  }
+
+  function showFallback(msg){
+    fallbackPanel.classList.add('show');
+    if (msg) noteEl.textContent = msg;
+  }
+
+  // Same iOS constraint as LUCKY DRAW's shake button: requestPermission()
+  // must be called synchronously inside a real click handler, nothing
+  // earlier in the gesture.
+  function ensurePermission(){
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+      DeviceOrientationEvent.requestPermission().then(function(res){
+        if (res === 'granted'){
+          window.addEventListener('deviceorientation', onOrientation);
+          noteEl.textContent = 'Motion sensor active · tilt the phone';
+        } else {
+          showFallback('Motion permission denied · use the sliders below to test');
+        }
+      }).catch(function(){
+        showFallback('Permission request failed · use the sliders below to test');
+      });
+    } else if (typeof DeviceOrientationEvent !== 'undefined'){
+      window.addEventListener('deviceorientation', onOrientation);
+      noteEl.textContent = 'Motion sensor active · tilt the phone';
+    } else {
+      showFallback('No motion sensor on this device/browser · use the sliders below to test');
+    }
+  }
+
+  startBtn.addEventListener('click', ensurePermission);
+  tareBtn.addEventListener('click', function(){ tareRoll = smRoll; tarePitch = smPitch; });
+
+  function onSlider(){
+    var r = +rollSlider.value, p = +pitchSlider.value;
+    rollVal.textContent = r; pitchVal.textContent = p;
+    curX = p; curY = r; if (curZ === null) curZ = 0;
+    sendTilt(r, p);
+  }
+  rollSlider.addEventListener('input', onSlider);
+  pitchSlider.addEventListener('input', onSlider);
+
+  /* ---------- phone link: laptop HUB <-> iPhone CONTROLLER (PeerJS) ---------- */
+  // Same pattern as LUCKY DRAW: WebRTC data channel brokered by PeerJS's free
+  // public signaling server -- no server of our own, no ESP32 Wi-Fi. The device
+  // that has the ESP32 link (USB) hosts a short room code; the phone joins it
+  // and streams tilt; the hub shows it (bubble + graph) and relays r/p over
+  // USB. Libraries load on demand so the ESP32-served offline page never
+  // blocks on a CDN it can't reach.
+  var PEER_PREFIX = 'pindisplay26-';
+  var PEERJS_URL = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';
+  var QR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+  var linkRoleEl = document.getElementById('linkRole');
+  var hubBlock = document.getElementById('hubBlock');
+  var hubCodeEl = document.getElementById('hubCode');
+  var hubQr = document.getElementById('hubQr');
+  var hubUrlEl = document.getElementById('hubUrl');
+  var hubStatus = document.getElementById('hubStatus');
+  var ctrlBlock = document.getElementById('ctrlBlock');
+  var joinCodeEl = document.getElementById('joinCode');
+  var joinBtn = document.getElementById('joinBtn');
+  var ctrlStatus = document.getElementById('ctrlStatus');
+
+  var hubPeer = null, hubCode = null, phoneConn = null, phoneMsgs = 0, phoneRate = 0;
+  var ctrlPeer = null, ctrlConn = null, hubEspLinked = false;
+  var joinParam = (new URLSearchParams(location.search).get('join') || '').toUpperCase();
+  var scriptCache = {};
+
+  function loadScript(url){
+    if (!scriptCache[url]){
+      scriptCache[url] = new Promise(function(resolve, reject){
+        var s = document.createElement('script');
+        s.src = url; s.onload = resolve;
+        s.onerror = function(){ delete scriptCache[url]; reject(new Error('load failed')); };
+        document.head.appendChild(s);
+      });
+    }
+    return scriptCache[url];
+  }
+
+  function setLinkStatus(el, text, cls){
+    el.textContent = text;
+    el.classList.toggle('ok', cls === 'ok');
+    el.classList.toggle('bad', cls === 'bad');
+  }
+
+  // HUB = this device can reach the ESP32 itself (USB, or the ESP32's own
+  // Wi-Fi page) and isn't already a controller. Everything else is a phone.
+  function isHub(){ return linkReady() && !ctrlConn; }
+
+  function renderLink(){
+    if (currentMode !== 2) return;
+    var hub = isHub();
+    hubBlock.hidden = !hub;
+    ctrlBlock.hidden = hub;
+    linkRoleEl.textContent = hub ? 'HUB · SPECTATOR' : 'CONTROLLER';
+    // A controller phone has no ESP32 link of its own -- calibration lives on the hub.
+    calSection.hidden = !hub;
+    if (hub) startHub();
+  }
+
+  function randomCode(len){
+    var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I -- easy to read aloud
+    var s = '';
+    for (var i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
+    return s;
+  }
+
+  function joinUrl(code){ return location.origin + location.pathname + '?join=' + code; }
+
+  function startHub(){
+    if (hubPeer) return;
+    hubPeer = 'pending';
+    setLinkStatus(hubStatus, 'Opening room…');
+    loadScript(PEERJS_URL).then(function(){
+      // Keep the code across reloads of this tab so a phone can rejoin as-is.
+      var saved = null;
+      try { saved = sessionStorage.getItem('pdHubCode'); } catch (e) {}
+      openHubPeer(saved || randomCode(4));
+    }).catch(function(){
+      hubPeer = null;
+      setLinkStatus(hubStatus, 'Phone link needs internet (PeerJS CDN unreachable)', 'bad');
+    });
+  }
+
+  function openHubPeer(code){
+    var peer = new Peer(PEER_PREFIX + code, { debug: 1 });
+    hubPeer = peer;
+    peer.on('open', function(){
+      hubCode = code;
+      try { sessionStorage.setItem('pdHubCode', code); } catch (e) {}
+      hubCodeEl.textContent = code;
+      var url = joinUrl(code);
+      var hosted = location.protocol === 'https:';
+      hubUrlEl.textContent = hosted ? url : 'Open this page over HTTPS for the QR to work on iPhone';
+      hubQr.innerHTML = '';
+      if (hosted){
+        loadScript(QR_URL).then(function(){
+          new QRCode(hubQr, { text: url, width: 200, height: 200, colorDark: '#1b2823', colorLight: '#ffffff' });
+        }).catch(function(){ hubQr.textContent = 'QR unavailable'; });
+      } else {
+        hubQr.textContent = 'NO HTTPS';
+      }
+      setLinkStatus(hubStatus, 'Waiting for phone…');
+    });
+    peer.on('connection', function(conn){
+      // One controller at a time -- a new phone replaces the old one.
+      if (phoneConn && phoneConn !== conn) { try { phoneConn.close(); } catch (e) {} }
+      phoneConn = conn;
+      conn.on('open', function(){
+        setLinkStatus(hubStatus, 'Phone connected', 'ok');
+        if (currentMode !== 2) selectMode(2);
+        sendHubState();
+      });
+      conn.on('data', onPhoneData);
+      conn.on('close', function(){
+        if (phoneConn !== conn) return;
+        phoneConn = null;
+        setLinkStatus(hubStatus, 'Phone disconnected · waiting…', 'bad');
+      });
+      conn.on('error', function(){});
+    });
+    peer.on('error', function(err){
+      if (err && err.type === 'unavailable-id'){
+        // code taken (old tab still open, or a collision) -- pick a fresh one
+        try { sessionStorage.removeItem('pdHubCode'); } catch (e) {}
+        peer.destroy();
+        openHubPeer(randomCode(4));
+        return;
+      }
+      setLinkStatus(hubStatus, 'Link error: ' + (err && err.type ? err.type : err), 'bad');
+    });
+    peer.on('disconnected', function(){
+      // lost the signaling server (sleep / network blip) -- existing data
+      // channels keep working, but reconnect so new joins still find us
+      try { peer.reconnect(); } catch (e) {}
+    });
+  }
+
+  function sendHubState(){
+    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0 });
+  }
+  setInterval(sendHubState, 1000);
+
+  // Hub side: phone sample -> graph/bubble here + forward r/p to the ESP32.
+  function onPhoneData(msg){
+    if (!msg || msg.t !== 'tilt') return;
+    phoneMsgs++;
+    sensorActive = true;
+    lastOrientationAt = performance.now();
+    curX = msg.x; curY = msg.y; curZ = msg.z;
+    sendTilt(msg.r, msg.p);
+  }
+  setInterval(function(){
+    phoneRate = phoneMsgs; phoneMsgs = 0;
+    if (phoneConn && phoneConn.open){
+      setLinkStatus(hubStatus, phoneRate ? 'Phone streaming · ' + phoneRate + ' Hz → ESP32' :
+        'Phone connected · tap Start sensor on the phone', 'ok');
+    }
+  }, 1000);
+
+  // Controller side: join the laptop's room.
+  function joinHub(rawCode){
+    var code = (rawCode || '').trim().toUpperCase();
+    if (!code){ setLinkStatus(ctrlStatus, 'Enter the code shown on the laptop', 'bad'); return; }
+    if (ctrlPeer){ try { ctrlPeer.destroy(); } catch (e) {} ctrlPeer = null; }
+    ctrlConn = null;
+    joinBtn.disabled = true;
+    setLinkStatus(ctrlStatus, 'Connecting…');
+    loadScript(PEERJS_URL).then(function(){
+      var peer = new Peer(PEER_PREFIX + 'c' + Math.random().toString(36).slice(2, 8), { debug: 1 });
+      ctrlPeer = peer;
+      peer.on('open', function(){
+        var conn = peer.connect(PEER_PREFIX + code, { reliable: true });
+        conn.on('open', function(){
+          ctrlConn = conn;
+          joinBtn.disabled = false;
+          joinBtn.textContent = 'Rejoin';
+          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · tap Start sensor', 'ok');
+          renderStatus();
+        });
+        conn.on('data', function(msg){
+          if (!msg || msg.t !== 'hub') return;
+          hubEspLinked = !!msg.esp;
+          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'),
+            hubEspLinked ? 'ok' : 'bad');
+          renderStatus();
+        });
+        conn.on('close', function(){
+          ctrlConn = null;
+          joinBtn.disabled = false;
+          setLinkStatus(ctrlStatus, 'Disconnected from laptop · rejoin', 'bad');
+          renderStatus();
+        });
+      });
+      peer.on('error', function(err){
+        joinBtn.disabled = false;
+        setLinkStatus(ctrlStatus, 'Could not join · check the code (' + (err && err.type ? err.type : 'error') + ')', 'bad');
+      });
+    }).catch(function(){
+      joinBtn.disabled = false;
+      setLinkStatus(ctrlStatus, 'Phone link needs internet (PeerJS CDN unreachable)', 'bad');
+    });
+  }
+  joinBtn.addEventListener('click', function(){ joinHub(joinCodeEl.value); });
+  joinCodeEl.addEventListener('keydown', function(e){ if (e.key === 'Enter') joinHub(joinCodeEl.value); });
+
+  // Opened from the hub's QR (?join=CODE): go straight to tilt as controller.
+  if (joinParam){
+    joinCodeEl.value = joinParam;
+    showView(2);
+    joinHub(joinParam);
+  }
+
+  connectWS();
+})();
+</script>
+</body>
+</html>
