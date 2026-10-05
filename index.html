@@ -274,8 +274,13 @@
   .cam-frame{position:relative;width:100%;aspect-ratio:4 / 3;overflow:hidden;border:1px solid var(--line);background:#1a1a1a;}
   .cam-frame video,.cam-frame img{display:block;width:100%;height:100%;object-fit:cover;}
   .cam-frame iframe{display:block;width:100%;height:100%;border:0;background:#1a1a1a;}
+  .vdo-open{align-self:flex-start;color:var(--muted);font-size:12px;}
   /* left-right flip, on both the hub preview and the phone's live view */
-  .cam-frame.mirrored iframe,.cam-frame.mirrored video,.cam-frame.mirrored img{transform:scaleX(-1);}
+  /* Flip own <video>/<img> with CSS. NOT the VDO.Ninja <iframe>: iOS Safari
+     renders video inside a transformed cross-origin iframe as solid black, so
+     the iframe is mirrored by VDO.Ninja itself (&mirror in its URL). */
+  .cam-frame.mirrored video,.cam-frame.mirrored img,
+  .cam-hub .cam-frame.mirrored iframe{transform:scaleX(-1);}  /* hub = desktop Chrome, safe */
 
   .preset-row{margin-top:12px;}
   .preset-row .btn{min-height:38px;padding:0 6px;font-size:11px;}
@@ -611,6 +616,7 @@
         <video id="camVideo" playsinline muted autoplay hidden></video>
         <img id="camImg" alt="Live view of the pin display" hidden>
       </div>
+      <a class="link-btn vdo-open" id="vdoOpenLink" href="#" target="_blank" rel="noopener" hidden>Video stays black? Open it in a new tab</a>
     </div>
 
     <!-- controller phone: the hub shared a Google Meet link for the live view -->
@@ -2156,6 +2162,25 @@
   var vdoId = null, vdoHubFrame = null, vdoViewId = null, vdoViewFrame = null;
   var VDO_ID_RE = /^[A-Za-z0-9]{6,40}$/;
 
+  var vdoOpenLink = document.getElementById('vdoOpenLink');
+
+  // push (hub): pick the webcam and start at once, no mic, minimal UI;
+  // quality=2 (360p) + 30fps -- pins don't need detail, and fewer pixels means
+  // less encode/transfer/decode time on every hop.
+  function vdoPushUrl(id){
+    // (no &mirror here: the hub's own preview is flipped with CSS, which is
+    // fine on desktop Chrome, and the outgoing stream must stay unflipped so
+    // the phone's &mirror can't double-flip it back)
+    return 'https://vdo.ninja/?push=' + id + '&webcam&autostart&audiodevice=0&cleanoutput&quality=2&maxframerate=30';
+  }
+  // view (phone): cleanish keeps VDO.Ninja's tap-to-play control (iOS may
+  // block autoplay; cleanoutput would hide the only way to start it);
+  // buffer=0 = smallest jitter buffer (Chromium honours it); h264 decodes in
+  // hardware on iPhone. Mirroring is VDO.Ninja's own &mirror, never CSS.
+  function vdoViewUrl(id){
+    return 'https://vdo.ninja/?view=' + id + '&cleanish&noaudio&buffer=0&codec=h264' + (camMirror ? '&mirror' : '');
+  }
+
   function makeFrame(src){
     var f = document.createElement('iframe');
     f.src = src;
@@ -2168,9 +2193,7 @@
     if (camStream) stopCam();
     vdoId = 'pd26' + (hubCode || 'x') + Math.random().toString(36).slice(2, 10);
     // push: pick the webcam and start at once, no mic, minimal UI
-    // quality=2 (360p) + 30fps: pins don't need detail, and fewer pixels means
-    // less encode/transfer/decode time on every hop
-    vdoHubFrame = makeFrame('https://vdo.ninja/?push=' + vdoId + '&webcam&autostart&audiodevice=0&cleanoutput&quality=2&maxframerate=30');
+    vdoHubFrame = makeFrame(vdoPushUrl(vdoId));
     applyMirror();
     camHubFrame.appendChild(vdoHubFrame);
     renderCamHub();
@@ -2194,6 +2217,11 @@
     camHubFrame.classList.toggle('mirrored', camMirror);
     camVideo.parentNode.classList.toggle('mirrored', camMirror);
     mirrorBtn.textContent = 'Mirror: ' + (camMirror ? 'ON' : 'OFF');
+    // VDO.Ninja frames mirror via their URL -- reload them with the new flag
+    if (vdoViewFrame && vdoViewId && vdoViewFrame.src !== vdoViewUrl(vdoViewId)){
+      vdoViewFrame.src = vdoViewUrl(vdoViewId);
+      vdoOpenLink.href = vdoViewUrl(vdoViewId);
+    }
   }
   mirrorBtn.addEventListener('click', function(){
     camMirror = !camMirror;
@@ -2209,10 +2237,10 @@
     if (id === (vdoViewId || '')) return;
     if (vdoViewFrame){ vdoViewFrame.remove(); vdoViewFrame = null; }
     vdoViewId = id || null;
-    if (!id){ if (!camVideo.srcObject && camImg.hidden) camView.hidden = true; return; }
-    // buffer=0: smallest jitter buffer (Chromium honours it); h264 decodes in
-    // hardware on iPhone
-    vdoViewFrame = makeFrame('https://vdo.ninja/?view=' + id + '&cleanoutput&noaudio&autoplay&buffer=0&codec=h264');
+    if (!id){ vdoOpenLink.hidden = true; if (!camVideo.srcObject && camImg.hidden) camView.hidden = true; return; }
+    vdoViewFrame = makeFrame(vdoViewUrl(id));
+    vdoOpenLink.href = vdoViewUrl(id);
+    vdoOpenLink.hidden = false;
     applyMirror();
     camVideo.hidden = true; camImg.hidden = true;
     camVideo.parentNode.appendChild(vdoViewFrame);
