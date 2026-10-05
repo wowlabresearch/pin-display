@@ -317,7 +317,7 @@
   .tof-cell{background:#e7e7e3;border-color:rgb(242 242 240 / 90%);font-size:10px;}
   .empty-state{background:rgb(242 242 240 / 82%);}
   .empty-mark{border-color:var(--line);color:var(--ink);}
-  .legend-scale{background:linear-gradient(90deg, #f4ef1f, #f8f5a0 35%, #a0a09b);}
+  .legend-scale{background:linear-gradient(90deg, #ed7054, #f2d777 52%, #34a891);}
   .legend-window,.legend-note-mark{border-color:var(--ink);}
 
   .hub-qr{background:#fff;}
@@ -1016,13 +1016,14 @@
     if (tofOk === false) tofEmptyLabel.textContent = 'ToF sensor not found · check wiring and reboot the ESP32';
   }
 
-  // Near = vivid yellow -> pale yellow -> far = grey (deck palette), over the
-  // 200-4000mm span -- independent of the narrower pin window.
-  var RAMP = [[244,239,31],[248,245,160],[160,160,155]];
+  // Range map keeps the ToF visualizer's coral -> yellow -> teal ramp (near ->
+  // far) over 200-4000mm -- deliberately not the deck palette, so depth stays
+  // readable. Independent of the narrower pin window.
+  var RAMP = [[237,112,84],[242,215,119],[52,168,145]];
   function distanceColor(d){
     var t = Math.max(0, Math.min(1, (d - visNear) / (visFar - visNear)));
     var a, b, u;
-    if (t < 0.35){ a = RAMP[0]; b = RAMP[1]; u = t / 0.35; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.35) / 0.65; }
+    if (t < 0.52){ a = RAMP[0]; b = RAMP[1]; u = t / 0.52; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.52) / 0.48; }
     return 'rgb(' + Math.round(a[0] + (b[0]-a[0])*u) + ',' + Math.round(a[1] + (b[1]-a[1])*u) + ',' + Math.round(a[2] + (b[2]-a[2])*u) + ')';
   }
 
