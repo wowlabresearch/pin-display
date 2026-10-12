@@ -1849,7 +1849,9 @@
   // Short on purpose: carrying the TURN credentials too made the QR too
   // dense to scan. The hub's own TURN allocation is enough -- the phone (even
   // behind LTE CGNAT) reaches the hub's relay address from its side.
-  function joinUrl(code){ return location.origin + location.pathname + '?join=' + code; }
+  // &v= is a cache-buster: Pages serves max-age=600, and the room code is
+  // reused across reloads, so the same join URL kept opening a stale page.
+  function joinUrl(code){ return location.origin + location.pathname + '?join=' + code + '&v=' + Date.now().toString(36); }
 
   // Hub: paste / clear TURN credentials. Reload so the room reopens (same
   // code) with the new ICE servers and the QR carries them.
