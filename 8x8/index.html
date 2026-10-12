@@ -118,6 +118,10 @@
   .cal-rev{position:absolute;left:6px;bottom:6px;padding:1px 5px;background:var(--ink);color:#fff;
     font-size:9px;font-weight:600;letter-spacing:.04em;}
   .cal-cell:not(.is-rev) .cal-rev{display:none;}
+  .anim-seg{flex-wrap:wrap;margin:0;}
+  .anim-seg .seg-btn{flex:1 1 30%;}
+  .anim-seg .seg-btn + .seg-btn{border-left:0;}
+  .anim-seg .seg-btn:not(:last-child){border-right:1px solid var(--line);}
   .inv-list{margin:0;color:var(--ink);font-size:13px;line-height:1.6;}
   .link-btn{padding:0;border:0;background:none;color:var(--bad);font:inherit;text-decoration:underline;cursor:pointer;}
   .cal-side{display:flex;flex-direction:column;gap:18px;}
@@ -770,7 +774,7 @@
        {"mode":0} + {"cal":1}, leaving sends {"cal":0}. -->
   <div class="view" id="viewCal" hidden>
     <section class="intro">
-      <p class="eyebrow">PCA9685 <span>·</span> 16 SERVOS</p>
+      <p class="eyebrow">2 × PCA9685 <span>·</span> 32 SERVOS</p>
       <h1>Servo calibration<span class="title-period">.</span></h1>
     </section>
     <section class="visual-layout cal-layout">
@@ -800,7 +804,22 @@
           <li>Tap a servo in the grid to sweep just that one 0 → 180 → 0°.</li>
           <li>A dot marks the servos you've checked. If a pin isn't at 0 mm at 0°, re-seat its horn.</li>
           <li>If a servo runs backwards (pin up at 0°), switch to <strong>Tap = reverse direction</strong> and tap it. Saved on this ESP32.</li>
+          <li><strong>Animations</strong> loop a pattern over all 32 pins (heights in mm on the grid). Tapping a servo or All to 0° stops it.</li>
         </ol>
+        <!-- looping patterns, computed on the ESP32 ({"anim":id}, 0 = stop) -->
+        <div class="anim-block">
+          <div class="matrix-heading">
+            <span>ANIMATIONS</span>
+            <span id="animState">OFF</span>
+          </div>
+          <div class="seg anim-seg" id="animSeg" role="group" aria-label="Pattern animation">
+            <button class="seg-btn" type="button" data-anim="1">Spiral snake</button>
+            <button class="seg-btn" type="button" data-anim="2">Ripple</button>
+            <button class="seg-btn" type="button" data-anim="3">Wave</button>
+            <button class="seg-btn" type="button" data-anim="4">Breathe</button>
+            <button class="seg-btn" type="button" data-anim="0">Stop</button>
+          </div>
+        </div>
         <div class="inv-block">
           <div class="matrix-heading">
             <span>REVERSED SERVOS</span>
@@ -853,14 +872,14 @@
   var zeroBtn = document.getElementById('zeroBtn');
   var calExitBtn = document.getElementById('calExitBtn');
   // Interleaved layout (see config.h): 2 layers x 4x4 on an 8x8 grid,
-  // L1 (r,c) -> (2r, 2c+1), L0 (r,c) -> (2r+1, 2c). pinPos[pin] = grid cell.
+  // L0 (r,c) -> (2r, 2c), L1 (r,c) -> (2r+1, 2c+1). pinPos[pin] = grid cell.
   // These defaults matter on the phone, which never gets the ESP32's hello.
   var gridRows = 8, gridCols = 8, crankR = 19.441;
   var pinPos = (function(){
     var a = [];
     for (var i = 0; i < 32; i++){
       var L = Math.floor(i / 16), r = Math.floor((i % 16) / 4), c = i % 4;
-      a.push((2 * r + (L ? 0 : 1)) * 8 + 2 * c + (L ? 1 : 0));
+      a.push((2 * r + L) * 8 + 2 * c + L);
     }
     return a;
   })();
@@ -1082,8 +1101,9 @@
       else if (currentMode === CAL_VIEW) showView(0);  // ended elsewhere (another page)
     }
     if (msg.mode !== undefined && !calMode) showView(msg.mode);
+    if (msg.anim !== undefined) renderAnim(msg.anim);
     if (msg.tof) onTofFrame(msg.tof, msg.h || []);
-    else if (msg.h) onTiltPins(msg.h);
+    else if (msg.h){ if (calMode && calAnim) renderCalHeights(msg.h); else onTiltPins(msg.h); }
     if (msg.sw !== undefined){
       if (msg.sw < 0){
         if (sweepingPin >= 0 && calCells[sweepingPin]){
@@ -1107,6 +1127,41 @@
       setCalReadout(msg.a);
     }
   }
+
+  /* ---------- calibration pattern animations ---------- */
+  var ANIM_NAMES = ['OFF', 'SPIRAL SNAKE', 'RIPPLE', 'WAVE', 'BREATHE'];
+  var animSeg = document.getElementById('animSeg');
+  var animState = document.getElementById('animState');
+  var calAnim = 0;
+  function renderAnim(a){
+    calAnim = a | 0;
+    Array.prototype.forEach.call(animSeg.children, function(b){
+      b.classList.toggle('active', calAnim > 0 && +b.dataset.anim === calAnim);
+    });
+    animState.textContent = ANIM_NAMES[calAnim] || 'OFF';
+    if (calAnim){
+      calStatus.textContent = 'ANIMATION · ' + ANIM_NAMES[calAnim];
+      calGrid.classList.add('is-anim');
+    } else {
+      calGrid.classList.remove('is-anim');
+      resetAllCells();
+      if (calMode && sweepingPin < 0){ calStatus.textContent = 'ALL AT 0°'; setCalReadout(0); }
+    }
+  }
+  // live pin heights (0.1mm) into the calibration grid while a pattern plays
+  function renderCalHeights(heights){
+    var maxH = 2 * crankR;
+    for (var j = 0; j < calCells.length && j < heights.length; j++){
+      if (!calCells[j]) continue;
+      var h = heights[j] / 10;
+      calCells[j].querySelector('.cal-fill').style.height = (h / maxH * 100) + '%';
+      calCells[j].querySelector('.cal-angle').textContent = h.toFixed(0);
+    }
+  }
+  animSeg.addEventListener('click', function(e){
+    var b = e.target.closest('.seg-btn');
+    if (b) espSend({ anim: +b.dataset.anim });
+  });
 
   calExitBtn.addEventListener('click', function(){ closeCal(); });
   zeroBtn.addEventListener('click', function(){
