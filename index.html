@@ -830,34 +830,10 @@
   var pitchVal = document.getElementById('pitchVal');
   var noteEl = document.getElementById('note');
 
-  var socket = null, wsReady = false;
   var smRoll = 0, smPitch = 0;
   var tareRoll = 0, tarePitch = 0;
   var lastSendAt = 0;
   var SEND_INTERVAL_MS = 20; // ~50Hz -- keeps link latency small next to the ESP32's 60Hz loop
-
-  function connectWS(){
-    // An HTTPS-hosted page (the phone-link setup) can't open ws:// at all
-    // (mixed content) -- it reaches the ESP32 via USB or the laptop hub instead.
-    if (location.protocol === 'https:') return;
-    // Served from the ESP32 itself, so location.hostname is always right --
-    // no IP to hardcode even if WIFI_AP_SSID/IP ever changes.
-    // Opened as a local file (file://, no hostname) or from a dev server on
-    // the PC -- fall back to the ESP32's AP address so it still connects
-    // as long as this computer is joined to the PinDisplay Wi-Fi.
-    var host = location.protocol === 'file:' || !location.hostname ||
-      location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? '192.168.4.1' : location.hostname;
-    var url = 'ws://' + host + ':81/';
-    socket = new WebSocket(url);
-    socket.onopen = function(){ wsReady = true; renderStatus(); };
-    socket.onclose = function(){ wsReady = false; renderStatus(); setTimeout(connectWS, 1500); };
-    socket.onerror = function(){ wsReady = false; };
-    socket.onmessage = function(ev){
-      var msg;
-      try { msg = JSON.parse(ev.data); } catch (err) { return; }
-      onServerMessage(msg);
-    };
-  }
 
   /* ---------- servo calibration ---------- */
   // Firmware owns the state: it parks every servo at raw 0deg in cal mode,
@@ -872,18 +848,16 @@
   var calMode = false, sweepingPin = -1;
   var calCells = [];
 
-  // One command, one link: USB if it's open (PC debugging), else Wi-Fi.
-  // Sending on both would run each command twice on the ESP32.
-  function wsSend(obj){
-    var line = JSON.stringify(obj);
-    if (serialWriter) { serialWriter.write(new TextEncoder().encode(line + '\n')).catch(function(){}); return; }
-    if (socket && wsReady) socket.send(line);
+  // Every command goes to the ESP32 as one JSON line over USB serial.
+  function espSend(obj){
+    if (!serialWriter) return;
+    serialWriter.write(new TextEncoder().encode(JSON.stringify(obj) + '\n')).catch(function(){});
   }
 
   /* ---------- USB serial link (PC Chrome/Edge, Web Serial) ---------- */
-  // Same JSON protocol as the WebSocket, one message per line. Web Serial
-  // needs a secure context, so it shows up when this file is opened locally
-  // (file://) on a PC -- not on http://192.168.4.1 and never on iPhone.
+  // The only link to the ESP32: one JSON message per line. Web Serial needs
+  // a secure context (file:// or https://) and Chrome/Edge -- never iPhone,
+  // which reaches the ESP32 through the laptop hub instead.
   var SERIAL_BAUD = 115200;  // = SERIAL_BAUD in config.h
   var usbBtn = document.getElementById('usbBtn');
   var serialPort = null, serialReader = null, serialWriter = null, serialHelloSeen = false;
@@ -909,7 +883,7 @@
     // so keep asking until a hello actually comes back.
     (function askHello(){
       if (!serialWriter || serialHelloSeen) return;
-      wsSend({ hello: 1 });
+      espSend({ hello: 1 });
       setTimeout(askHello, 1000);
     })();
   }
@@ -973,8 +947,8 @@
         ' · ' + i + '</span><span class="cal-angle">0°</span><span class="cal-rev">REV</span>';
       cell.addEventListener('click', (function(pin){
         return function(){
-          if (calTapMode === 'reverse') wsSend({ inv: [pin, isInv(pin) ? 0 : 1] });
-          else wsSend({ sweep: pin });
+          if (calTapMode === 'reverse') espSend({ inv: [pin, isInv(pin) ? 0 : 1] });
+          else espSend({ sweep: pin });
         };
       })(i));
       calGrid.appendChild(cell);
@@ -1007,7 +981,7 @@
     Array.prototype.forEach.call(calTapSeg.children, function(x){ x.classList.toggle('active', x === b); });
     calGrid.classList.toggle('rev-mode', calTapMode === 'reverse');
   });
-  invClearBtn.addEventListener('click', function(){ wsSend({ invClear: 1 }); });
+  invClearBtn.addEventListener('click', function(){ espSend({ invClear: 1 }); });
 
   function setCellAngle(pin, deg){
     var cell = calCells[pin];
@@ -1102,7 +1076,7 @@
     if (sweepingPin >= 0 && calCells[sweepingPin]) calCells[sweepingPin].classList.remove('is-sweeping');
     sweepingPin = -1;
     resetAllCells();
-    wsSend({ zero: 1 });
+    espSend({ zero: 1 });
   });
   buildCalGrid();
 
@@ -1141,23 +1115,23 @@
 
   function selectMode(m){
     if (!linkReady()){
-      homeNote.textContent = 'Not connected to the ESP32 · join the PinDisplay Wi-Fi or connect USB';
+      homeNote.textContent = 'Not connected to the ESP32 · connect USB';
     }
     showView(m);
-    wsSend({ mode: m });
+    espSend({ mode: m });
   }
   // Calibration: park the firmware at home (stops ToF/tilt driving the pins),
   // then turn cal on -- it parks every servo at raw 0deg.
   function openCal(){
     if (!linkReady()){
-      homeNote.textContent = 'Not connected to the ESP32 · join the PinDisplay Wi-Fi or connect USB';
+      homeNote.textContent = 'Not connected to the ESP32 · connect USB';
     }
     showView(CAL_VIEW);
-    wsSend({ mode: 0 });
-    wsSend({ cal: 1 });
+    espSend({ mode: 0 });
+    espSend({ cal: 1 });
   }
   function closeCal(){
-    wsSend({ cal: 0 });
+    espSend({ cal: 0 });
     showView(0);
   }
 
@@ -1338,7 +1312,7 @@
     var wait = 80 - (performance.now() - lastWinSentAt);
     if (wait > 0){ winSendTimer = setTimeout(sendWindow, wait); return; }
     lastWinSentAt = performance.now();
-    wsSend({ near: tofNear, far: tofFar });
+    espSend({ near: tofNear, far: tofFar });
   }
 
   function onWinInput(e){
@@ -1361,7 +1335,7 @@
     presetBtns[pi].addEventListener('click', function(){
       tofNear = +this.dataset.near; tofFar = +this.dataset.far;
       renderWindow();
-      wsSend({ near: tofNear, far: tofFar });
+      espSend({ near: tofNear, far: tofFar });
     });
   }
 
@@ -1369,7 +1343,7 @@
   buildPinGrid();
   renderWindow();
 
-  function linkReady(){ return wsReady || !!serialWriter; }
+  function linkReady(){ return !!serialWriter; }
 
   var HOME_NOTE = 'Select a mode to start driving the pin matrix.';
 
@@ -1378,9 +1352,7 @@
     // Clear a stale "not connected" warning once either link comes up.
     if (linkReady()) homeNote.textContent = HOME_NOTE;
     var ctrl = !!(ctrlConn && ctrlConn.open);
-    statusLabel.textContent = usb && wsReady ? 'USB + Wi-Fi connected' : usb ? 'USB connected' :
-      wsReady ? 'Wi-Fi connected' : ctrl ? 'Linked to laptop' :
-      location.protocol === 'https:' ? 'No ESP32 link' : 'Disconnected · retrying';
+    statusLabel.textContent = usb ? 'USB connected' : ctrl ? 'Linked to laptop' : 'No ESP32 link';
     statusEl.classList.toggle('is-connected', linkReady() || ctrl);
     renderLink();
     usbBtn.textContent = usb ? 'Disconnect USB' : 'Connect USB';
@@ -1400,13 +1372,16 @@
 
   // Biggest |Z jolt| (signed, m/s^2) since the last tilt message actually went
   // out, so a spike shorter than the send interval still reaches the ESP32.
-  var hzPeak = 0, gzBase = null;
+  var hzPeak = 0, gzBase = null, tiltSeq = 0;
   function noteJolt(v){ if (Math.abs(v) > Math.abs(hzPeak)) hzPeak = v; }
 
-  function sendTilt(roll, pitch){
+  // relayed = hub forwarding a phone sample: the phone already paced it, and
+  // network jitter delivers those in clumps -- throttling again here dropped
+  // about half of them (often the newest), so pass every one through.
+  function sendTilt(roll, pitch, relayed){
     var now = performance.now();
     updateBubble(roll, pitch);
-    if (now - lastSendAt < SEND_INTERVAL_MS) return;
+    if (!relayed && now - lastSendAt < SEND_INTERVAL_MS) return;
     lastSendAt = now;
     var r = Math.round(roll * 10) / 10, p = Math.round(pitch * 10) / 10;
     // Controller phone -> laptop hub (which forwards to the ESP32). Raw
@@ -1418,11 +1393,14 @@
         z: curZ === null ? 0 : Math.round(curZ * 10) / 10 };
       if (curA) msg.a = [Math.round(curA[0] * 100) / 100, Math.round(curA[1] * 100) / 100, Math.round(curA[2] * 100) / 100];
       msg.hz = Math.round(hzPeak * 10) / 10;
-      if (ctrlConn.send(msg) !== false) hzPeak = 0;  // relay may drop a throttled send
+      // s = sequence number: the hub drops a sample that arrives after a newer
+      // one (the direct channel is unordered) and counts gaps as losses.
+      msg.s = tiltSeq + 1;
+      if (ctrlConn.send(msg) !== false){ hzPeak = 0; tiltSeq++; }  // relay may drop a throttled send
       return;
     }
     if (linkReady() && !calMode && currentMode === 2){
-      wsSend({ r: r, p: p, hz: Math.round(hzPeak * 10) / 10 });
+      espSend({ r: r, p: p, hz: Math.round(hzPeak * 10) / 10 });
       hzPeak = 0;
     }
   }
@@ -1629,7 +1607,7 @@
     var wait = 80 - (performance.now() - lastRespSentAt);
     if (wait > 0){ respTimer = setTimeout(sendResp, wait); return; }
     lastRespSentAt = performance.now();
-    wsSend({ resp: +respSlider.value });
+    espSend({ resp: +respSlider.value });
   }
   respSlider.addEventListener('input', function(){
     respDragging = true;
@@ -1649,7 +1627,7 @@
     var wait = 80 - (performance.now() - lastBounceSentAt);
     if (wait > 0){ bounceTimer = setTimeout(sendBounce, wait); return; }
     lastBounceSentAt = performance.now();
-    wsSend({ bounce: +bounceSlider.value });
+    espSend({ bounce: +bounceSlider.value });
   }
   bounceSlider.addEventListener('input', function(){
     bounceDragging = true;
@@ -1766,8 +1744,8 @@
     el.classList.toggle('bad', cls === 'bad');
   }
 
-  // HUB = this device can reach the ESP32 itself (USB, or the ESP32's own
-  // Wi-Fi page) and isn't already a controller. Everything else is a phone.
+  // HUB = this device can reach the ESP32 itself (USB) and isn't already a
+  // controller. Everything else is a phone.
   function isHub(){ return linkReady() && !ctrlConn; }
 
   function renderLink(){
@@ -1920,16 +1898,42 @@
   setInterval(sendHubState, 1000);
 
   // Hub side: phone sample -> graph/bubble here + forward r/p to the ESP32.
+  // Phone link health, logged to the console every 2s next to the ESP32's
+  // [tilt] line: sent = samples the phone sent (from its seq), rx = arrived
+  // here, lost = never arrived, late = arrived after a newer one (dropped),
+  // maxGap = longest silence between arrivals.
+  var seqOwner = null, lastSeq = 0, seqFirst = 0;
+  var linkRx = 0, linkLost = 0, linkLate = 0, linkMaxGap = 0, linkLastAt = 0;
   function onPhoneData(msg){
     if (!msg || msg.t !== 'tilt') return;
+    var now = performance.now();
+    if (typeof msg.s === 'number'){
+      // new phone connection, or the phone rejoined and restarted its count
+      if (seqOwner !== phoneConn || msg.s < lastSeq - 50){ seqOwner = phoneConn; lastSeq = msg.s - 1; seqFirst = lastSeq; }
+      if (msg.s <= lastSeq){ linkLate++; linkLost = Math.max(0, linkLost - 1); return; }
+      linkLost += msg.s - lastSeq - 1;
+      lastSeq = msg.s;
+    }
+    linkRx++;
+    if (linkLastAt && now - linkLastAt > linkMaxGap) linkMaxGap = now - linkLastAt;
+    linkLastAt = now;
     phoneMsgs++;
     sensorActive = true;
     lastOrientationAt = performance.now();
     curX = msg.x; curY = msg.y; curZ = msg.z;
     if (msg.a){ curA = msg.a; motionActive = true; lastMotionAt = lastOrientationAt; }
     if (typeof msg.hz === 'number') noteJolt(msg.hz);
-    sendTilt(msg.r, msg.p);
+    sendTilt(msg.r, msg.p, true);
   }
+  setInterval(function(){
+    if (!phoneConn || !phoneConn.open || !linkRx && !linkLate) return;
+    var sent = lastSeq - seqFirst;
+    console.log('[hub] sent=' + (seqOwner ? sent : '?') + ' rx=' + linkRx + ' lost=' + linkLost +
+      ' late=' + linkLate + ' maxGap=' + Math.round(linkMaxGap) + 'ms via ' + (phoneConn.kind || '?').toUpperCase());
+    seqFirst = lastSeq;
+    linkRx = linkLost = linkLate = 0;
+    linkMaxGap = 0;
+  }, 2000);
   setInterval(function(){
     phoneRate = phoneMsgs; phoneMsgs = 0;
     if (phoneConn && phoneConn.open){
@@ -1991,7 +1995,11 @@
         call.on('close', hideCam);
       });
       peer.on('open', function(){
-        var conn = peer.connect(PEER_PREFIX + code, { reliable: true });
+        // Unordered channel (PeerJS: reliable false -> ordered: false). With an
+        // ordered one, a single lost packet on Wi-Fi held back every later tilt
+        // sample until its retransmit (~0.3-0.5s freezes); now later samples
+        // pass straight through and the hub discards stale ones by seq.
+        var conn = peer.connect(PEER_PREFIX + code, { reliable: false });
         conn.kind = 'direct';
         conn.on('open', function(){
           if (attempt !== joinAttempt) { try { conn.close(); } catch (e) {} return; }
@@ -2406,7 +2414,6 @@
     joinHub(joinParam);
   }
 
-  connectWS();
 })();
 </script>
 </body>
