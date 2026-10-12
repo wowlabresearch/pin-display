@@ -1,0 +1,2776 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f2f2f0">
+<title>PIN DISPLAY 8×8</title>
+<!-- Inter, loaded non-blocking: on the ESP32's offline AP page this simply
+     fails and the system sans takes over, without holding up first paint. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap"
+      media="print" onload="this.media='all'">
+<style>
+  /* Visual language: light paper + neon-yellow glows, light-weight Inter,
+     hairline boxes (InteractionSensing'26 deck style). Token names are kept
+     from the earlier palette so every rule below still resolves:
+     --green = solid/dark, --coral = accent mark, --teal = "ok". */
+  :root{
+    color-scheme: light;
+    --paper:#f2f2f0; --ink:#202020; --muted:#8a8a86; --line:#c6c6c2;
+    --acc:#f4ef1f; --acc-deep:#d9d200; --acc-soft:#f8f5a0; --bad:#b4430a;
+    --green:#202020; --coral:#f4ef1f; --yellow:#f8f5a0; --teal:#202020;
+    --mono:"Inter",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    --display:"Inter",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;min-height:100%;}
+  body{
+    color:var(--ink);
+    background-color:var(--paper);
+    /* soft yellow glows like the deck's tiles, fixed so they don't scroll */
+    background-image:
+      radial-gradient(70% 60% at 100% 100%, rgb(244 239 31 / 55%), transparent 70%),
+      radial-gradient(45% 40% at 92% 0%, rgb(244 239 31 / 30%), transparent 70%),
+      linear-gradient(115deg, #f2f2f0 0%, #fbfbf8 45%, #f2f2f0 100%);
+    background-attachment:fixed;
+    font-family:var(--display);
+    overscroll-behavior:none;-webkit-user-select:none;user-select:none;
+  }
+  button{font:inherit;}
+
+  .shell{width:min(100% - 32px, 560px);margin:0 auto;}
+
+  .topbar{min-height:66px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;
+    gap:10px 12px;padding-block:12px;border-bottom:1px solid var(--line);}
+  .wordmark{display:inline-flex;align-items:center;gap:10px;font-size:13px;font-weight:700;letter-spacing:.08em;
+    white-space:nowrap;}
+  .wordmark-mark{height:28px;padding:0 9px;display:grid;place-items:center;color:var(--paper);
+    background:var(--green);font:11px var(--mono);letter-spacing:.02em;}
+  .connection-state{display:flex;align-items:center;gap:8px;color:var(--muted);font:10px var(--mono);letter-spacing:.04em;}
+  .state-dot{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:#9da69f;}
+  .connection-state.is-connected .state-dot{background:var(--teal);box-shadow:0 0 0 4px rgb(52 168 145 / 14%);}
+
+  .intro{min-height:126px;display:flex;flex-direction:column;justify-content:center;animation:arrive 450ms ease both;}
+  .eyebrow,.matrix-heading,.page-footer{font:10px var(--mono);letter-spacing:.06em;}
+  .eyebrow{margin:0 0 12px;color:var(--muted);}
+  .eyebrow span{padding:0 4px;color:var(--coral);}
+  h1{margin:0;font-size:clamp(24px, 6.5vw, 40px);line-height:.98;font-weight:600;}
+  .title-period{color:var(--coral);}
+
+  .visual-layout{display:flex;flex-direction:column;gap:20px;padding-bottom:20px;animation:arrive 550ms 80ms ease both;}
+  .matrix-heading{display:flex;justify-content:space-between;padding:0 0 12px;color:var(--muted);}
+
+  .level{position:relative;width:min(100%, 360px);margin-inline:auto;aspect-ratio:1;overflow:hidden;
+    border:1px solid var(--line);background:#e4e9df;}
+  .level::before{content:"";position:absolute;left:50%;top:0;width:1px;height:100%;background:var(--line);}
+  .level::after{content:"";position:absolute;left:0;top:50%;width:100%;height:1px;background:var(--line);}
+  .level-ring{position:absolute;left:50%;top:50%;width:38%;aspect-ratio:1;border:1px dashed #b8c2b8;
+    border-radius:50%;transform:translate(-50%,-50%);}
+  .bubble{position:absolute;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;
+    background:var(--coral);box-shadow:0 0 0 6px rgb(237 112 84 / 16%);z-index:1;}
+
+  .readout-section{padding:4px 0 16px;border-bottom:1px solid var(--line);}
+  .stat-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .primary-stat{display:flex;align-items:end;gap:10px;}
+  .stat-value{font-size:46px;line-height:.9;font-weight:500;font-variant-numeric:tabular-nums;}
+  .stat-unit{padding-bottom:2px;color:var(--muted);font:9px/1.5 var(--mono);}
+
+  /* Live X/Y/Z angle strip chart -- same structure as LUCKY DRAW's debug graph
+     (legend bar + scrolling ring-buffer canvas), restyled to this palette. */
+  .graph-wrap{border:1px solid var(--line);background:#f7f8f4;}
+  .graph-legend{display:flex;align-items:center;gap:14px;padding:8px 10px;border-bottom:1px solid var(--line);
+    font:10px var(--mono);letter-spacing:.04em;color:var(--muted);}
+  .graph-legend strong{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums;}
+  .graph-legend .sw{width:8px;height:8px;display:inline-block;margin-right:5px;vertical-align:0;}
+  .sw-x{background:#e4572e;} .sw-y{background:#2a9d5c;} .sw-z{background:#3b6fd4;}  /* = AXIS_COLORS */
+  .graph-legend .graph-hint{margin-left:auto;}
+  #angleGraph,#accelGraph{display:block;width:100%;height:140px;}
+  .tilt-graph{display:flex;flex-direction:column;gap:20px;}
+
+  .btnrow{display:flex;gap:10px;}
+  .btn{flex:1;min-height:44px;padding:0 14px;border:1px solid var(--line);color:var(--ink);background:transparent;
+    font-size:13px;font-weight:600;cursor:pointer;transition:background-color 140ms ease, transform 140ms ease;}
+  .btn:active{transform:translateY(1px);background:#e4e9df;}
+  .btn.primary{border-color:var(--green);color:#fff;background:var(--green);}
+  .btn.primary:active{background:#124b3e;}
+  .btn:focus-visible{outline:3px solid var(--coral);outline-offset:3px;}
+
+  /* Servo calibration: per-pin 0 -> 180 -> 0 sweep on a ROWS x COLS grid. */
+  .cal-grid{display:grid;gap:4px;}
+  /* empty checkerboard cell of the interleaved 8x8 layout (no pin there) */
+  .grid-gap{aspect-ratio:1;display:grid;place-items:center;}
+  .grid-gap::after{content:"";width:3px;height:3px;border-radius:50%;background:var(--line);}
+  /* layer tint: L0 = original 0x40 board, L1 = added 0x41 board */
+  .layer-1{box-shadow:inset 0 0 0 2px rgb(242 215 119 / 75%);}
+  .cal-steps{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;
+    color:var(--muted);font-size:12px;line-height:1.6;}
+  .cal-steps strong{color:var(--ink);font-weight:500;}
+  /* tap-action switch + direction-reverse marks */
+  .seg{display:flex;margin:0 0 10px;border:1px solid var(--line);background:rgb(255 255 255 / 55%);}
+  .seg-btn{flex:1;min-height:38px;padding:0 8px;border:0;background:transparent;color:var(--muted);
+    font-size:12px;font-weight:500;cursor:pointer;}
+  .seg-btn + .seg-btn{border-left:1px solid var(--line);}
+  .seg-btn.active{background:var(--acc);color:var(--ink);}
+  .seg-btn:focus-visible{outline:2px solid var(--ink);outline-offset:-2px;}
+  .cal-grid.rev-mode .cal-cell{border-style:dashed;}
+  .cal-rev{position:absolute;left:6px;bottom:6px;padding:1px 5px;background:var(--ink);color:#fff;
+    font-size:9px;font-weight:600;letter-spacing:.04em;}
+  .cal-cell:not(.is-rev) .cal-rev{display:none;}
+  .inv-list{margin:0;color:var(--ink);font-size:13px;line-height:1.6;}
+  .link-btn{padding:0;border:0;background:none;color:var(--bad);font:inherit;text-decoration:underline;cursor:pointer;}
+  .cal-side{display:flex;flex-direction:column;gap:18px;}
+  .cal-cell{position:relative;aspect-ratio:1;overflow:hidden;padding:0;border:1px solid var(--line);
+    background:#f7f8f4;color:var(--ink);cursor:pointer;font:10px var(--mono);
+    transition:border-color 140ms ease, transform 140ms ease;}
+  .cal-cell:active{transform:translateY(1px);}
+  .cal-cell:focus-visible{outline:3px solid var(--coral);outline-offset:2px;}
+  .cal-fill{position:absolute;left:0;right:0;bottom:0;height:0;background:rgb(237 112 84 / 28%);}
+  .cal-label{position:absolute;left:3px;top:2px;color:var(--muted);font-size:8px;}
+  .cal-angle{position:relative;font-size:10px;font-variant-numeric:tabular-nums;}
+  .cal-cell.is-sweeping{border-color:var(--coral);}
+  .cal-cell.is-done{border-color:var(--teal);}
+  .cal-cell.is-done::after{content:"";position:absolute;right:6px;top:6px;width:6px;height:6px;border-radius:50%;
+    background:var(--teal);}
+  .btn.active{border-color:var(--coral);color:var(--coral);}
+
+  [hidden]{display:none !important;}
+
+  .topbar-left{display:inline-flex;align-items:center;gap:10px;}
+  .topbar-right{display:inline-flex;align-items:center;gap:10px;}
+  .usb-btn{min-height:32px;padding:0 10px;border:0;color:#fff;background:var(--green);cursor:pointer;
+    font-size:11px;font-weight:600;}
+  .usb-btn:active{background:#124b3e;}
+  .usb-btn.on{color:var(--green);background:transparent;border:1px solid var(--green);}
+  .back-btn{width:32px;height:32px;padding:0;border:1px solid var(--line);background:transparent;color:var(--ink);
+    font-size:15px;cursor:pointer;}
+  .back-btn:active{background:#e4e9df;}
+
+  /* landing: mode cards */
+  .mode-card{display:flex;align-items:flex-start;gap:16px;width:100%;padding:18px 16px;text-align:left;
+    border:1px solid var(--line);background:#f7f8f4;color:var(--ink);cursor:pointer;
+    transition:border-color 140ms ease, transform 140ms ease;}
+  .mode-card:active{transform:translateY(1px);border-color:var(--green);}
+  .mode-card:focus-visible{outline:3px solid var(--coral);outline-offset:3px;}
+  .mode-num{width:36px;height:36px;flex:0 0 36px;display:grid;place-items:center;color:var(--paper);
+    background:var(--green);font:12px var(--mono);}
+  .mode-body{display:flex;flex-direction:column;gap:6px;min-width:0;}
+  .mode-title{font-size:18px;font-weight:600;}
+  .mode-desc{color:var(--muted);font-size:12px;line-height:1.5;}
+  .mode-tag{align-self:flex-start;margin-top:4px;padding:3px 7px;border:1px solid var(--line);
+    color:var(--muted);font:9px var(--mono);letter-spacing:.05em;}
+  .mode-tag.ok{border-color:rgb(52 168 145 / 50%);color:var(--teal);}
+  .mode-tag.bad{border-color:rgb(237 112 84 / 50%);color:var(--coral);}
+  .mode-card:disabled{opacity:.55;cursor:not-allowed;}
+
+  /* mode 1: 8x8 range map + pin heights (same palette as the ToF visualizer) */
+  .tof-frame{position:relative;width:min(100%, 360px);margin-inline:auto;aspect-ratio:1;
+    border:1px solid var(--line);background:#e4e9df;}
+  .tof-grid{position:absolute;inset:0;display:grid;}
+  .tof-cell{display:grid;place-items:center;border:1px solid var(--paper);background:#dce2d8;
+    color:var(--ink);font:9px var(--mono);font-variant-numeric:tabular-nums;}
+  .empty-state{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:12px;color:var(--muted);pointer-events:none;font:11px var(--mono);background:rgb(228 233 223 / 85%);}
+  .empty-mark{width:48px;height:48px;display:grid;place-items:center;border:1px solid #b8c2b8;color:var(--green);
+    font:14px var(--mono);}
+  .legend{display:flex;align-items:center;gap:8px;padding-top:12px;color:var(--muted);}
+  .legend-label,.legend-value{font:9px var(--mono);letter-spacing:.04em;}
+  .legend-label{color:var(--ink);}
+  .legend-scale{position:relative;height:8px;flex:1;background:linear-gradient(90deg, var(--coral), var(--yellow) 52%, var(--teal));}
+  /* bracket over the slice of the color scale that actually moves the pins */
+  .legend-window{position:absolute;top:-4px;bottom:-4px;border:1.5px solid var(--ink);}
+  .legend-note{display:flex;align-items:center;gap:8px;margin:10px 0 0;color:var(--muted);font:9px var(--mono);letter-spacing:.04em;}
+  .legend-note-mark{width:14px;height:8px;border:1.5px solid var(--ink);}
+  /* phone link (hub / controller) */
+  .link-hub{display:flex;align-items:center;gap:16px;padding:14px;border:1px solid var(--line);background:#f7f8f4;}
+  .hub-qr{width:152px;height:152px;flex:0 0 152px;display:grid;place-items:center;background:#fff;cursor:zoom-in;
+    border:1px solid var(--line);color:var(--muted);font:9px var(--mono);}
+  .hub-qr img,.hub-qr canvas{display:block;width:140px !important;height:140px !important;}
+  /* tap the QR to show it full-screen -- easiest to scan off a laptop */
+  .hub-qr.zoom{position:fixed;inset:0;z-index:1000;width:auto;height:auto;border:0;cursor:zoom-out;}
+  .hub-qr.zoom img,.hub-qr.zoom canvas{width:min(80vmin,480px) !important;height:min(80vmin,480px) !important;}
+  .hub-info{display:flex;flex-direction:column;gap:6px;min-width:0;}
+  .hub-code-label{color:var(--muted);font:9px var(--mono);letter-spacing:.06em;}
+  .hub-code{font:500 34px/1 var(--mono);letter-spacing:.12em;}
+  .hub-url{color:var(--muted);font:9px var(--mono);word-break:break-all;}
+  .hub-status{color:var(--muted);font:10px/1.5 var(--mono);}
+  .turn-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px;}
+  .turn-btn{border:1px solid var(--line);background:transparent;color:var(--muted);font:9px var(--mono);padding:2px 6px;cursor:pointer;}
+  .turn-btn:hover{color:var(--ink);border-color:var(--ink);}
+  .hub-status.ok{color:var(--teal);}
+  .hub-status.bad{color:var(--coral);}
+  .link-ctrl{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);background:#f7f8f4;}
+  .join-row{display:flex;gap:10px;}
+  .join-input{flex:1;min-width:0;min-height:44px;padding:0 12px;border:1px solid var(--line);background:#fff;
+    color:var(--ink);font:500 18px var(--mono);letter-spacing:.14em;text-transform:uppercase;border-radius:0;}
+  .join-input:focus{outline:2px solid var(--green);outline-offset:-1px;}
+  .join-row .btn{flex:0 0 auto;}
+
+  /* ---------- mode 2 layout ----------
+     Mobile: the column wrappers dissolve (display:contents) and .o1-.o8 keep
+     the original single-column order. Desktop: sensing left, servos right,
+     sized to the viewport so the whole view fits without scrolling. */
+  .tilt-sense,.tilt-sense-main,.tilt-side{display:contents;}
+  .o1{order:1}.o2{order:2}.o3{order:3}.o4{order:4}.o5{order:5}.o6{order:6}.o7{order:7}.o8{order:8}
+  .tilt-servo{display:flex;flex-direction:column;gap:20px;}
+  #angleGraph,#accelGraph{height:140px;}
+  /* mode 1 uses the same trick */
+  .tof-ctrl{display:contents;}
+
+  @media (min-width: 1024px){
+    body.wide .shell{width:min(100% - 48px, 1440px);}
+    body.wide .topbar{min-height:56px;padding-block:8px;}
+    body.wide .view .intro{min-height:0;flex-direction:row;align-items:baseline;justify-content:flex-start;
+      gap:18px;padding:14px 0 12px;}
+    /* mobile reorder hooks off -- desktop uses plain DOM order inside each column */
+    .tilt-layout .o1,.tilt-layout .o2,.tilt-layout .o3,.tilt-layout .o4,
+    .tilt-layout .o5,.tilt-layout .o6,.tilt-layout .o7,.tilt-layout .o8,
+    .tof-layout .o1,.tof-layout .o2,.tof-layout .o3,.tof-layout .o4{order:0;}
+    body.wide .view .intro .eyebrow{margin:0;order:2;}
+    body.wide .view h1{font-size:30px;}
+
+    /* mode 1: range map | pin heights | controls, all one screen */
+    .tof-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(280px,340px);gap:32px;
+      height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
+    .tof-sense,.tof-servo{min-height:0;}
+    .tof-sense .tof-frame,.tof-servo .pin-grid{width:min(100%, calc(100dvh - 300px));}
+    .tof-ctrl{display:flex;flex-direction:column;gap:16px;min-height:0;overflow-y:auto;padding-right:2px;}
+    .tof-ctrl .readout-section{padding-top:0;}
+    .tof-ctrl .stat-value{font-size:40px;}
+    .tof-ctrl .preset-row .btn{font-size:10px;}
+
+    .tilt-layout{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:32px;
+      height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
+    .tilt-sense{display:grid;grid-template-rows:auto auto auto;align-content:start;gap:16px;min-height:0;
+      --lvl:clamp(150px, 22vh, 250px);}
+    .tilt-sense-main{display:grid;grid-template-columns:var(--lvl) minmax(0,1fr);gap:24px;align-items:start;}
+    .tilt-level-wrap .level{width:var(--lvl);margin:0;}
+    .tilt-side{display:flex;flex-direction:column;gap:12px;padding-top:24px;}
+    .tilt-side .readout-section{padding-top:0;}
+    .tilt-side .stat-value{font-size:40px;}
+    /* the two charts split the leftover height of the left column */
+    /* side by side, so each chart gets the full leftover height */
+    .tilt-graph{min-height:0;gap:16px;flex-direction:row;}
+    .graph-block{flex:1 1 0;min-width:0;display:flex;flex-direction:column;}
+    .graph-block .graph-legend{gap:10px;}
+    .graph-block .graph-wrap{display:flex;flex-direction:column;}
+    /* never let the charts overlap: on very short screens the left column
+       scrolls on its own instead (page itself still doesn't) */
+    .tilt-sense{overflow-y:auto;padding-right:2px;}
+    /* fixed plot height (about half the old fill-the-column height) */
+    #angleGraph,#accelGraph{flex:none;height:clamp(80px, 15vh, 160px);}
+
+    .link-hub,.link-ctrl{padding:10px 12px;}
+    .hub-qr{width:132px;height:132px;flex-basis:132px;}
+    .hub-qr img,.hub-qr canvas{width:122px !important;height:122px !important;}
+    .hub-code{font-size:28px;}
+
+    /* right column scrolls on its own if calibration is opened, so the page doesn't */
+    .tilt-servo{min-height:0;overflow-y:auto;gap:16px;padding-right:2px;}
+    .tilt-pins .pin-grid{width:min(100%, calc(100dvh - 330px));}
+    /* webcam on: pins and preview share the right column's height */
+    .tilt-servo.has-cam .tilt-pins .pin-grid{width:min(100%, calc(50dvh - 140px));}
+    .tilt-servo.has-cam .cam-hub .cam-frame{width:min(100%, calc((50dvh - 200px) * 4 / 3));margin-inline:auto;}
+  }
+
+  /* Google Meet link sharing */
+  .meet-row{display:flex;gap:10px;}
+  .meet-input{font-size:13px;letter-spacing:0;text-transform:none;}
+  .meet-view{display:flex;flex-direction:column;gap:10px;}
+  .meet-open{display:flex;align-items:center;justify-content:center;text-decoration:none;}
+
+  /* webcam live view */
+  .cam-view,.cam-hub{display:flex;flex-direction:column;gap:10px;}
+  .cam-frame{position:relative;width:100%;aspect-ratio:4 / 3;overflow:hidden;border:1px solid var(--line);background:#1a1a1a;}
+  .cam-frame video,.cam-frame img{display:block;width:100%;height:100%;object-fit:cover;}
+  /* left-right flip, on both the hub preview and the phone's live view */
+  .cam-frame.mirrored video,.cam-frame.mirrored img{transform:scaleX(-1);}
+
+  .preset-row{margin-top:12px;}
+  .preset-row .btn{min-height:38px;padding:0 6px;font-size:11px;}
+  .preset-row .btn.active{border-color:var(--green);color:var(--green);}
+  .pin-grid{display:grid;gap:4px;width:min(100%, 360px);margin-inline:auto;}
+  .pin-cell{position:relative;aspect-ratio:1;overflow:hidden;border:1px solid var(--line);background:#f7f8f4;}
+  .pin-fill{position:absolute;left:0;right:0;bottom:0;height:0;background:rgb(27 98 82 / 30%);
+    transition:height 90ms linear;}
+  .pin-val{position:absolute;inset:0;display:grid;place-items:center;font:9px var(--mono);
+    font-variant-numeric:tabular-nums;}
+
+  .fallback{display:none;flex-direction:column;}
+  .fallback.show{display:flex;}
+  .stat-row{min-height:56px;display:flex;flex-direction:column;justify-content:center;gap:8px;
+    border-bottom:1px solid var(--line);color:var(--muted);font-size:12px;}
+  .stat-row-head{display:flex;justify-content:space-between;}
+  .stat-row strong{color:var(--ink);font:12px var(--mono);font-variant-numeric:tabular-nums;}
+  input[type=range]{width:100%;margin:0;accent-color:var(--green);}
+
+  .readout-footer{min-height:42px;display:flex;align-items:center;gap:10px;color:var(--muted);font:10px/1.5 var(--mono);}
+  .readout-footer-mark{width:8px;height:8px;flex:0 0 8px;background:var(--coral);}
+
+  .page-footer{min-height:48px;display:flex;align-items:center;justify-content:space-between;gap:16px;
+    border-top:1px solid var(--line);color:var(--muted);font-size:8px;
+    padding-bottom:env(safe-area-inset-bottom, 0px);}
+  .page-footer i{width:4px;height:4px;display:inline-block;margin:0 7px 2px;border-radius:50%;background:var(--coral);}
+
+  /* ================= theme layer (deck style) =================
+     Overrides the structural rules above: hairlines, translucent white
+     tiles with yellow corner glow, light-weight type, yellow as the one
+     accent, ink for everything that must read. */
+  .tile,.mode-card,.link-hub,.link-ctrl,.graph-wrap{
+    border:1px solid var(--line);
+    background:radial-gradient(120% 120% at 100% 100%, rgb(244 239 31 / 32%), transparent 55%), rgb(255 255 255 / 55%);
+  }
+  .eyebrow,.matrix-heading,.page-footer{font-size:11px;letter-spacing:.01em;font-weight:400;}
+  .eyebrow span{color:var(--muted);}
+  h1{font-weight:300;letter-spacing:-.035em;font-size:clamp(40px, 11vw, 64px);line-height:1;}
+  .title-period{color:var(--acc-deep);}
+  .wordmark{font-weight:500;letter-spacing:.02em;}
+  .wordmark-mark{background:var(--acc);color:var(--ink);font:500 11px var(--display);letter-spacing:0;}
+  .connection-state{font-size:11px;letter-spacing:0;}
+  .state-dot{background:#c9c9c5;}
+  .connection-state.is-connected .state-dot{background:var(--acc);box-shadow:0 0 0 1px var(--ink), 0 0 0 5px rgb(244 239 31 / 35%);}
+
+  .btn{border-color:var(--line);background:rgb(255 255 255 / 60%);font-weight:500;}
+  .btn:active{background:var(--acc-soft);}
+  .btn.primary,.usb-btn{border:1px solid var(--acc-deep);color:var(--ink);background:var(--acc);}
+  .btn.primary:active,.usb-btn:active{background:var(--acc-deep);}
+  .usb-btn{font-weight:500;}
+  .usb-btn.on{color:var(--ink);background:transparent;border:1px solid var(--ink);}
+  .btn.active,.preset-row .btn.active{border-color:var(--ink);color:var(--ink);background:var(--acc);}
+  .btn:focus-visible,.cal-cell:focus-visible,.mode-card:focus-visible{outline:2px solid var(--ink);}
+  .back-btn{background:rgb(255 255 255 / 60%);}
+  .back-btn:active{background:var(--acc-soft);}
+
+  .mode-card:active{border-color:var(--ink);}
+  .mode-num{background:var(--ink);color:#fff;font:500 12px var(--display);}
+  .mode-title{font-weight:400;font-size:22px;letter-spacing:-.02em;}
+  .mode-tag{font-size:10px;letter-spacing:.02em;background:rgb(255 255 255 / 70%);}
+  .mode-tag.ok{border-color:var(--ink);color:var(--ink);background:var(--acc);}
+  .mode-tag.bad{border-color:var(--bad);color:var(--bad);}
+
+  .level{background:radial-gradient(90% 90% at 100% 100%, rgb(244 239 31 / 35%), transparent 60%), rgb(255 255 255 / 55%);}
+  .level-ring{border-color:#bdbdb8;}
+  .bubble{background:var(--acc);box-shadow:0 0 0 1.5px var(--ink), 0 0 22px 6px rgb(244 239 31 / 55%);}
+  .stat-value{font-weight:300;letter-spacing:-.03em;}
+  .stat-unit{font-size:10px;}
+
+  .pin-cell,.cal-cell{background:rgb(255 255 255 / 60%);}
+  .pin-fill,.cal-fill{background:linear-gradient(to top, var(--acc) 0%, var(--acc-soft) 100%);}
+  .pin-val{font-size:12px;}
+  .cal-cell.is-sweeping{border-color:var(--ink);}
+  .cal-cell.is-done{border-color:var(--acc-deep);}
+  .cal-cell.is-done::after{background:var(--ink);}
+
+  .tof-frame{background:rgb(255 255 255 / 55%);}
+  .tof-cell{background:#e7e7e3;border-color:rgb(242 242 240 / 90%);font-size:10px;}
+  .empty-state{background:rgb(242 242 240 / 82%);}
+  .empty-mark{border-color:var(--line);color:var(--ink);}
+  .legend-scale{background:linear-gradient(90deg, #ed7054, #f2d777 52%, #34a891);}
+  .legend-window,.legend-note-mark{border-color:var(--ink);}
+
+  .hub-qr{background:#fff;}
+  .hub-code{font-weight:400;letter-spacing:.14em;}
+  .hub-status.ok{color:var(--ink);font-weight:500;}
+  .hub-status.bad,.mode-tag.bad{color:var(--bad);}
+  .join-input{font-weight:400;}
+  .join-input:focus{outline-color:var(--ink);}
+  input[type=range]{accent-color:var(--ink);}
+
+  .readout-footer-mark{background:var(--acc);box-shadow:0 0 0 1px var(--ink);}
+  .page-footer i{background:var(--acc-deep);}
+
+  /* ================= desktop readability + landing =================
+     Grey secondary text is sized for phones above; on a laptop at arm's
+     length it needs +2-4px. Landing becomes a hero title + two big tiles. */
+  @media (min-width: 1024px){
+    .eyebrow,.matrix-heading,.page-footer{font-size:13px;}
+    .connection-state{font-size:13px;}
+    .stat-unit{font-size:12px;}
+    .graph-legend{font-size:12px;}
+    .legend-label,.legend-value,.legend-note{font-size:12px;}
+    .hub-code-label,.hub-url{font-size:12px;}
+    .hub-status,.readout-footer{font-size:13px;}
+    .stat-row{font-size:14px;}
+    .stat-row strong{font-size:14px;}
+    .mode-tag{font-size:12px;}
+    .cal-label{font-size:11px;}
+    .cal-angle,.pin-val{font-size:14px;}
+    .tof-cell{font-size:11px;}
+    .empty-state{font-size:13px;}
+    .btn{font-size:14px;}
+    .preset-row .btn,.tof-ctrl .preset-row .btn{font-size:12px;padding:0 4px;white-space:nowrap;}
+    /* digits line up in live readouts without spacing out ordinary text */
+    .stat-value,.pin-val,.cal-angle,.tof-cell,.graph-legend strong,.stat-row strong,.hub-code{font-variant-numeric:tabular-nums;}
+    body.wide .view .intro .eyebrow{font-size:13px;}
+
+    /* landing: hero + two side-by-side mode tiles, fits one screen */
+    body.wide #viewHome .intro{flex-direction:column;align-items:flex-start;gap:0;padding:6vh 0 4vh;}
+    body.wide #viewHome .intro .eyebrow{order:0;margin:0 0 14px;font-size:14px;}
+    body.wide #viewHome h1{font-size:clamp(64px, 7.5vw, 120px);}
+    #viewHome .visual-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px;}
+    #viewHome .mode-card{flex-direction:column;justify-content:space-between;gap:28px;
+      min-height:clamp(260px, 42vh, 460px);padding:28px 28px 26px;}
+    #viewHome .mode-num{width:52px;height:52px;flex-basis:52px;font-size:16px;}
+    #viewHome .mode-body{gap:12px;}
+    #viewHome .mode-title{font-size:clamp(30px, 2.8vw, 44px);font-weight:300;letter-spacing:-.03em;}
+    #viewHome .mode-desc{font-size:16px;max-width:42ch;}
+    #viewHome .mode-tag{font-size:13px;padding:5px 10px;}
+    #viewHome .readout-footer{grid-column:1 / -1;font-size:14px;}
+    #viewHome .visual-layout{grid-template-columns:repeat(3, minmax(0,1fr));}
+
+    /* short laptop screens (~768px tall): compact the tilt page's upper rows
+       so both charts keep a usable height */
+    @media (max-height: 720px){
+      .tilt-sense{--lvl:clamp(120px, 19vh, 170px);gap:12px;}
+      .hub-qr{width:112px;height:112px;flex-basis:112px;}
+      .hub-qr img,.hub-qr canvas{width:104px !important;height:104px !important;}
+      .hub-code{font-size:22px;}
+      .link-hub{gap:12px;padding:8px 10px;}
+      .tilt-side{padding-top:20px;gap:8px;}
+      .tilt-side .stat-value{font-size:32px;}
+      .tilt-side .btn{min-height:38px;}
+      .tilt-side .resp-row .stat-row{min-height:0;gap:4px;padding-bottom:6px;}
+      .tilt-side .readout-footer{min-height:0;}
+      #angleGraph,#accelGraph{height:80px;}
+    }
+
+    /* calibration page: big servo grid | readout + steps + buttons */
+    .cal-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,380px);gap:40px;
+      height:calc(100dvh - 146px);min-height:540px;padding-bottom:16px;}
+    .cal-main{min-height:0;}
+    .cal-main .cal-grid{width:min(100%, calc(100dvh - 230px));margin-inline:auto;}
+    .cal-side{display:flex;flex-direction:column;gap:20px;min-height:0;}
+    .cal-side .readout-section{padding-top:0;}
+    .cal-steps{font-size:14px;}
+    .cal-label{font-size:12px;}
+    .cal-angle{font-size:18px;}
+  }
+
+  @keyframes arrive{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important;}
+  }
+</style>
+</head>
+<body class="wide">
+<main class="shell">
+  <header class="topbar">
+    <span class="topbar-left">
+      <button class="back-btn" id="backBtn" type="button" aria-label="Back to mode select" hidden>←</button>
+      <span class="wordmark"><span class="wordmark-mark">InteractionSensing'26</span> Data Physicalization</span>
+    </span>
+    <span class="topbar-right">
+      <span class="connection-state" id="status"><span class="state-dot"></span><span id="statusLabel">Disconnected · retrying</span></span>
+      <button class="usb-btn" id="usbBtn" type="button" hidden>Connect USB</button>
+    </span>
+  </header>
+
+  <!-- ===================== landing: pick a mode ===================== -->
+  <div class="view" id="viewHome">
+    <section class="intro">
+      <p class="eyebrow">SELECT MODE <span>·</span> 4 × 4 PIN MATRIX</p>
+      <h1>Hands-on #1<span class="title-period">.</span></h1>
+    </section>
+    <section class="visual-layout">
+      <button class="mode-card" id="modeCalBtn" type="button">
+        <span class="mode-num">00</span>
+        <span class="mode-body">
+          <span class="mode-title">Servo Calibration</span>
+          <span class="mode-desc">Parks every servo at 0° and sweeps one at a time 0 → 180 → 0°, to check each pin really sits at 0 mm. Run this first.</span>
+          <span class="mode-tag">PCA9685 · 16 SERVOS</span>
+        </span>
+      </button>
+      <button class="mode-card" id="modeTofBtn" type="button">
+        <span class="mode-num">01</span>
+        <span class="mode-body">
+          <span class="mode-title">ToF → Pin</span>
+          <span class="mode-desc">Each of the 32 pins (two interleaved 4×4 layers) follows the 8×8 ToF zone it sits on.</span>
+          <span class="mode-tag" id="tofTag">VL53L5CX · CHECKING</span>
+        </span>
+      </button>
+      <button class="mode-card" id="modeTiltBtn" type="button">
+        <span class="mode-num">02</span>
+        <span class="mode-body">
+          <span class="mode-title">iPhone Tilt → Pin</span>
+          <span class="mode-desc">Tilts the pin surface like water in a glass, following the iPhone's orientation.</span>
+          <span class="mode-tag">IMU · TOF OFF</span>
+        </span>
+      </button>
+      <div class="readout-footer">
+        <span class="readout-footer-mark"></span>
+        <span id="homeNote">Select a mode to start driving the pin matrix.</span>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================== mode 1: ToF -> pins ===================== -->
+  <div class="view" id="viewTof" hidden>
+    <section class="intro">
+      <p class="eyebrow">VL53L5CX <span>·</span> 8 × 8 → 4 × 4</p>
+      <h1>Distance field<span class="title-period">.</span></h1>
+    </section>
+    <!-- desktop: range map | pin heights | controls (readout, window, calibration);
+         mobile: wrappers dissolve and .o* keep the single-column order -->
+    <section class="visual-layout tof-layout">
+      <div class="tof-sense o1">
+        <div class="matrix-heading">
+          <span>RANGE MAP</span>
+          <span id="tofFrameLabel">AWAITING FRAME</span>
+        </div>
+        <div class="tof-frame">
+          <div class="tof-grid" id="tofGrid"></div>
+          <div class="empty-state" id="tofEmpty">
+            <span class="empty-mark">64</span>
+            <span id="tofEmptyLabel">Waiting for sensor data</span>
+          </div>
+        </div>
+        <div class="legend">
+          <span class="legend-label">NEAR</span>
+          <span class="legend-value" id="legendNear">200 mm</span>
+          <div class="legend-scale" aria-hidden="true"><span class="legend-window" id="legendWindow"></span></div>
+          <span class="legend-value" id="legendFar">4000 mm</span>
+          <span class="legend-label">FAR</span>
+        </div>
+        <p class="legend-note"><span class="legend-note-mark"></span><span id="legendNote">PIN WINDOW 100 – 600 MM</span></p>
+      </div>
+
+      <div class="tof-servo o3">
+        <div class="matrix-heading">
+          <span>PIN HEIGHT</span>
+          <span id="pinMaxLabel">0 – 38.9 MM</span>
+        </div>
+        <div class="pin-grid" id="pinGrid"></div>
+      </div>
+
+      <div class="tof-ctrl" id="tofCtrlCol">
+      <div class="readout-section o4">
+        <p class="eyebrow">LIVE READOUT</p>
+        <div class="stat-pair">
+          <div class="primary-stat"><span class="stat-value" id="tofNearest">--</span><span class="stat-unit">mm<br>NEAREST</span></div>
+          <div class="primary-stat"><span class="stat-value" id="tofValid">--</span><span class="stat-unit">/ 64<br>ZONES</span></div>
+        </div>
+      </div>
+
+      <div class="o2">
+        <div class="matrix-heading">
+          <span>PIN WINDOW</span>
+          <span id="winSpanLabel">SPAN 500 MM</span>
+        </div>
+        <label class="stat-row">
+          <span class="stat-row-head"><span>Near · pin fully up</span><strong><span id="winNearVal">100</span> mm</strong></span>
+          <input type="range" id="winNear" min="0" max="4000" step="10" value="100">
+        </label>
+        <label class="stat-row">
+          <span class="stat-row-head"><span>Far · pin fully down</span><strong><span id="winFarVal">600</span> mm</strong></span>
+          <input type="range" id="winFar" min="0" max="4000" step="10" value="600">
+        </label>
+        <div class="btnrow preset-row">
+          <button class="btn" type="button" data-near="100" data-far="600">Hand · 0.1–0.6m</button>
+          <button class="btn" type="button" data-near="300" data-far="1500">Body · 0.3–1.5m</button>
+          <button class="btn" type="button" data-near="200" data-far="4000">Room · 0.2–4m</button>
+        </div>
+      </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================== mode 2: iPhone tilt ===================== -->
+  <div class="view" id="viewTilt" hidden>
+  <section class="intro">
+    <p class="eyebrow">IPHONE TILT <span>·</span> REAL-TIME</p>
+    <h1>Tilt field<span class="title-period">.</span></h1>
+  </section>
+
+  <section class="visual-layout tilt-layout">
+   <div class="tilt-sense">
+    <!-- Phone link (LUCKY DRAW pattern, PeerJS/WebRTC): the device wired to
+         the ESP32 is the HUB (spectates + relays to USB), the iPhone is the
+         CONTROLLER. Needs internet + an HTTPS-hosted page on both ends. -->
+    <div class="link-panel o1" id="linkPanel">
+      <div class="matrix-heading">
+        <span>PHONE LINK</span>
+        <span id="linkRole">--</span>
+      </div>
+      <div class="link-hub" id="hubBlock" hidden>
+        <div class="hub-qr" id="hubQr" aria-label="QR code to join from the phone"></div>
+        <div class="hub-info">
+          <span class="hub-code-label">ROOM CODE</span>
+          <span class="hub-code" id="hubCode">····</span>
+          <span class="hub-url" id="hubUrl"></span>
+          <span class="hub-status" id="hubStatus">Starting…</span>
+          <span class="turn-row">
+            <span class="hub-url" id="turnStatus">TURN · OFF</span>
+            <button class="turn-btn" id="turnBtn" type="button">Set TURN</button>
+            <button class="turn-btn" id="turnTestBtn" type="button">Test</button>
+            <button class="turn-btn" id="turnClearBtn" type="button">Clear</button>
+          </span>
+        </div>
+      </div>
+      <div class="link-ctrl" id="ctrlBlock" hidden>
+        <div class="join-row">
+          <input class="join-input" id="joinCode" type="text" inputmode="text" autocapitalize="characters"
+                 autocomplete="off" maxlength="6" placeholder="CODE" aria-label="Room code from the laptop">
+          <button class="btn primary" id="joinBtn" type="button">Join laptop</button>
+        </div>
+        <span class="hub-status" id="ctrlStatus">Enter the code shown on the laptop, or scan its QR.</span>
+      </div>
+    </div>
+
+    <!-- controller phone: live view of the pin display from the hub's webcam -->
+    <div class="cam-view o1" id="camView" hidden>
+      <div class="matrix-heading">
+        <span>LIVE VIEW · PIN DISPLAY</span>
+        <span id="camVia">--</span>
+      </div>
+      <div class="cam-frame">
+        <video id="camVideo" playsinline muted autoplay hidden></video>
+        <img id="camImg" alt="Live view of the pin display" hidden>
+      </div>
+    </div>
+
+    <!-- controller phone: the hub shared a Google Meet link for the live view -->
+    <div class="meet-view o1" id="meetView" hidden>
+      <div class="matrix-heading">
+        <span>LIVE VIEW · GOOGLE MEET</span>
+        <span>VIDEO CALL</span>
+      </div>
+      <a class="btn primary meet-open" id="meetOpen" href="#" target="_blank" rel="noopener">Open Google Meet</a>
+      <span class="hub-status">iPhone pauses this page's tilt sensor while Meet is in front -- turn on picture-in-picture in Meet and come back here, or watch Meet on another device.</span>
+    </div>
+
+    <div class="tilt-sense-main">
+    <div class="tilt-level-wrap o2">
+      <div class="matrix-heading">
+        <span>LEVEL</span>
+        <span>±30°</span>
+      </div>
+      <div class="level" id="level">
+        <div class="level-ring"></div>
+        <div class="bubble" id="bubble"></div>
+      </div>
+    </div>
+
+    <div class="tilt-side">
+    <div class="readout-section o3">
+      <p class="eyebrow">LIVE READOUT</p>
+      <div class="stat-pair">
+        <div class="primary-stat"><span class="stat-value" id="rollStat">0.0</span><span class="stat-unit">deg<br>ROLL</span></div>
+        <div class="primary-stat"><span class="stat-value" id="pitchStat">0.0</span><span class="stat-unit">deg<br>PITCH</span></div>
+      </div>
+    </div>
+
+    <div class="btnrow o5">
+      <button class="btn primary" id="startBtn" type="button">Start sensor</button>
+      <button class="btn" id="tareBtn" type="button">Set level</button>
+    </div>
+
+    <!-- how hard the pins chase the phone: ESP32 spring stiffness, saved on the board -->
+    <div class="resp-row o5" id="respRow">
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Response · water ↔ instant</span><strong><span id="respVal">70</span></strong></span>
+        <input type="range" id="respSlider" min="0" max="100" step="1" value="70">
+      </label>
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Bounce · phone Z jolt → heave</span><strong><span id="bounceVal">50</span></strong></span>
+        <input type="range" id="bounceSlider" min="0" max="100" step="1" value="50">
+      </label>
+    </div>
+
+    <div class="fallback o6" id="fallbackPanel">
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Roll</span><strong><span id="rollVal">0</span>°</strong></span>
+        <input type="range" id="rollSlider" min="-30" max="30" value="0" step="1">
+      </label>
+      <label class="stat-row">
+        <span class="stat-row-head"><span>Pitch</span><strong><span id="pitchVal">0</span>°</strong></span>
+        <input type="range" id="pitchSlider" min="-30" max="30" value="0" step="1">
+      </label>
+    </div>
+
+    <div class="readout-footer o7">
+      <span class="readout-footer-mark"></span>
+      <span id="note">Tap Start sensor to request motion permission.</span>
+    </div>
+    </div>
+    </div>
+
+    <div class="tilt-graph o4">
+      <div class="graph-block">
+        <div class="matrix-heading">
+          <span>ANGLE · X / Y / Z</span>
+          <span>±180°</span>
+        </div>
+        <div class="graph-wrap">
+          <div class="graph-legend">
+            <span><i class="sw sw-x"></i>X <strong id="xVal">--</strong></span>
+            <span><i class="sw sw-y"></i>Y <strong id="yVal">--</strong></span>
+            <span><i class="sw sw-z"></i>Z <strong id="zVal">--</strong></span>
+            <span class="graph-hint">deg</span>
+          </div>
+          <canvas id="angleGraph" height="140"></canvas>
+        </div>
+      </div>
+      <div class="graph-block">
+        <div class="matrix-heading">
+          <span>ACCELEROMETER · X / Y / Z</span>
+          <span>±20 m/s²</span>
+        </div>
+        <div class="graph-wrap">
+          <div class="graph-legend">
+            <span><i class="sw sw-x"></i>X <strong id="axVal">--</strong></span>
+            <span><i class="sw sw-y"></i>Y <strong id="ayVal">--</strong></span>
+            <span><i class="sw sw-z"></i>Z <strong id="azVal">--</strong></span>
+            <span class="graph-hint">m/s² · incl. gravity</span>
+          </div>
+          <canvas id="accelGraph" height="140"></canvas>
+        </div>
+      </div>
+    </div>
+
+   </div>
+
+   <div class="tilt-servo o8" id="tiltServoCol">
+
+    <div class="tilt-pins">
+      <div class="matrix-heading">
+        <span>PIN HEIGHT</span>
+        <span id="tiltPinLabel">AWAITING ESP32</span>
+      </div>
+      <div class="pin-grid" id="tiltPinGrid"></div>
+    </div>
+
+    <!-- hub laptop: share its webcam with the remote controller -->
+    <div class="cam-hub" id="camHub" hidden>
+      <div class="matrix-heading">
+        <span>WEBCAM → PHONE</span>
+        <span id="camHubStatus">OFF</span>
+      </div>
+      <div class="cam-frame" id="camHubFrame" hidden>
+        <video id="camPreview" playsinline muted autoplay></video>
+      </div>
+      <div class="btnrow">
+        <button class="btn" id="camBtn" type="button">Share webcam with phone</button>
+        <button class="btn" id="mirrorBtn" type="button">Mirror: ON</button>
+      </div>
+      <!-- alternative live view: a Google Meet the phone opens itself -->
+      <div class="meet-row">
+        <input class="join-input meet-input" id="meetInput" type="url" inputmode="url" autocomplete="off"
+               placeholder="https://meet.google.com/xxx-xxxx-xxx" aria-label="Google Meet link to share with the phone">
+        <button class="btn" id="meetBtn" type="button">Share link</button>
+      </div>
+      <span class="hub-status" id="meetStatus">Or start a Google Meet with this webcam and share its link.</span>
+    </div>
+   </div>
+  </section>
+  </div>
+
+  <!-- ===================== mode 0: servo calibration ===================== -->
+  <!-- Page-only view (no firmware mode of its own): entering sends
+       {"mode":0} + {"cal":1}, leaving sends {"cal":0}. -->
+  <div class="view" id="viewCal" hidden>
+    <section class="intro">
+      <p class="eyebrow">PCA9685 <span>·</span> 16 SERVOS</p>
+      <h1>Servo calibration<span class="title-period">.</span></h1>
+    </section>
+    <section class="visual-layout cal-layout">
+      <div class="cal-main">
+        <div class="matrix-heading">
+          <span>SERVO GRID</span>
+          <span id="calStatus">ALL AT 0°</span>
+        </div>
+        <!-- what a tap on a servo does -->
+        <div class="seg" id="calTapSeg" role="group" aria-label="Tap action">
+          <button class="seg-btn active" type="button" data-tap="sweep">Tap = sweep 0 → 180 → 0°</button>
+          <button class="seg-btn" type="button" data-tap="reverse">Tap = reverse direction</button>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
+      </div>
+
+      <div class="cal-side">
+        <div class="readout-section">
+          <p class="eyebrow">LIVE READOUT</p>
+          <div class="stat-pair">
+            <div class="primary-stat"><span class="stat-value" id="calAngleStat">0</span><span class="stat-unit">deg<br>ANGLE</span></div>
+            <div class="primary-stat"><span class="stat-value" id="calStrokeStat">0.0</span><span class="stat-unit">mm<br>STROKE</span></div>
+          </div>
+        </div>
+        <ol class="cal-steps">
+          <li>Every servo is parked at raw 0° — each pin should sit at <strong>0 mm</strong>.</li>
+          <li>Tap a servo in the grid to sweep just that one 0 → 180 → 0°.</li>
+          <li>A dot marks the servos you've checked. If a pin isn't at 0 mm at 0°, re-seat its horn.</li>
+          <li>If a servo runs backwards (pin up at 0°), switch to <strong>Tap = reverse direction</strong> and tap it. Saved on this ESP32.</li>
+        </ol>
+        <div class="inv-block">
+          <div class="matrix-heading">
+            <span>REVERSED SERVOS</span>
+            <button class="link-btn" id="invClearBtn" type="button">Reset all</button>
+          </div>
+          <p class="inv-list" id="calInvList">None</p>
+        </div>
+        <div class="btnrow">
+          <button class="btn" id="zeroBtn" type="button">All to 0°</button>
+          <button class="btn primary" id="calExitBtn" type="button">Exit calibration</button>
+        </div>
+        <div class="readout-footer">
+          <span class="readout-footer-mark"></span>
+          <span id="calNote">Pin control (ToF / tilt) is paused while this page is open.</span>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+(function(){
+  var statusEl = document.getElementById('status');
+  var statusLabel = document.getElementById('statusLabel');
+  var levelEl = document.getElementById('level');
+  var bubble = document.getElementById('bubble');
+  var rollStat = document.getElementById('rollStat');
+  var pitchStat = document.getElementById('pitchStat');
+  var startBtn = document.getElementById('startBtn');
+  var tareBtn = document.getElementById('tareBtn');
+  var fallbackPanel = document.getElementById('fallbackPanel');
+  var rollSlider = document.getElementById('rollSlider');
+  var pitchSlider = document.getElementById('pitchSlider');
+  var rollVal = document.getElementById('rollVal');
+  var pitchVal = document.getElementById('pitchVal');
+  var noteEl = document.getElementById('note');
+
+  var smRoll = 0, smPitch = 0;
+  var tareRoll = 0, tarePitch = 0;
+  var lastSendAt = 0;
+  var SEND_INTERVAL_MS = 20; // ~50Hz -- keeps link latency small next to the ESP32's 60Hz loop
+
+  /* ---------- servo calibration ---------- */
+  // Firmware owns the state: it parks every servo at raw 0deg in cal mode,
+  // runs the 0 -> 180 -> 0 sweep itself and streams {"sw":pin,"a":deg} back.
+  var calAngleStat = document.getElementById('calAngleStat');
+  var calStrokeStat = document.getElementById('calStrokeStat');
+  var calGrid = document.getElementById('calGrid');
+  var calStatus = document.getElementById('calStatus');
+  var zeroBtn = document.getElementById('zeroBtn');
+  var calExitBtn = document.getElementById('calExitBtn');
+  // Interleaved layout (see config.h): 2 layers x 4x4 on an 8x8 grid,
+  // L1 (r,c) -> (2r, 2c+1), L0 (r,c) -> (2r+1, 2c). pinPos[pin] = grid cell.
+  // These defaults matter on the phone, which never gets the ESP32's hello.
+  var gridRows = 8, gridCols = 8, crankR = 19.441;
+  var pinPos = (function(){
+    var a = [];
+    for (var i = 0; i < 32; i++){
+      var L = Math.floor(i / 16), r = Math.floor((i % 16) / 4), c = i % 4;
+      a.push((2 * r + (L ? 0 : 1)) * 8 + 2 * c + (L ? 1 : 0));
+    }
+    return a;
+  })();
+  // "L1 0,2" -- layer + its own 4x4 (row,col), as labelled on the build
+  function pinLabel(p){ return 'L' + Math.floor(p / 16) + ' ' + Math.floor((p % 16) / 4) + ',' + (p % 4); }
+  // Fill a CSS grid with gridRows x gridCols slots: a real cell (from make)
+  // where a pin sits, an empty dot elsewhere. Returns cells indexed by pin.
+  function layoutGrid(el, make){
+    el.innerHTML = '';
+    el.style.gridTemplateColumns = 'repeat(' + gridCols + ', minmax(0, 1fr))';
+    var at = {};
+    pinPos.forEach(function(cell, pin){ at[cell] = pin; });
+    var cells = new Array(pinPos.length);
+    for (var k = 0; k < gridRows * gridCols; k++){
+      var pin = at[k];
+      if (pin === undefined){
+        var gap = document.createElement('div');
+        gap.className = 'grid-gap';
+        el.appendChild(gap);
+        continue;
+      }
+      var cell = make(pin);
+      if (Math.floor(pin / 16) === 1) cell.classList.add('layer-1');
+      el.appendChild(cell);
+      cells[pin] = cell;
+    }
+    return cells;
+  }
+  var calMode = false, sweepingPin = -1;
+  var calCells = [];
+
+  // Every command goes to the ESP32 as one JSON line over USB serial.
+  function espSend(obj){
+    if (!serialWriter) return;
+    serialWriter.write(new TextEncoder().encode(JSON.stringify(obj) + '\n')).catch(function(){});
+  }
+
+  /* ---------- USB serial link (PC Chrome/Edge, Web Serial) ---------- */
+  // The only link to the ESP32: one JSON message per line. Web Serial needs
+  // a secure context (file:// or https://) and Chrome/Edge -- never iPhone,
+  // which reaches the ESP32 through the laptop hub instead.
+  var SERIAL_BAUD = 115200;  // = SERIAL_BAUD in config.h
+  var usbBtn = document.getElementById('usbBtn');
+  var serialPort = null, serialReader = null, serialWriter = null, serialHelloSeen = false;
+
+  async function openSerial(){
+    try {
+      serialPort = await navigator.serial.requestPort();
+      await serialPort.open({ baudRate: SERIAL_BAUD });
+      // On the DevKit's UART port, DTR/RTS drive the EN/IO0 auto-reset
+      // circuit -- left asserted they can hold the chip in reset or the ROM
+      // bootloader (only the "ESP-ROM:..." banner ever arrives). Release both
+      // so it boots normally; the hello retry below covers the reboot.
+      try { await serialPort.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
+    } catch (err) {
+      serialPort = null;
+      return;
+    }
+    serialWriter = serialPort.writable.getWriter();
+    serialHelloSeen = false;
+    renderStatus();
+    readSerial();
+    // The port open may reboot the ESP32 (and ToF init takes a few seconds),
+    // so keep asking until a hello actually comes back.
+    (function askHello(){
+      if (!serialWriter || serialHelloSeen) return;
+      espSend({ hello: 1 });
+      setTimeout(askHello, 1000);
+    })();
+  }
+
+  async function readSerial(){
+    var decoder = new TextDecoder(), buf = '';
+    try {
+      serialReader = serialPort.readable.getReader();
+      while (true){
+        var res = await serialReader.read();
+        if (res.done) break;
+        buf += decoder.decode(res.value, { stream: true });
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        for (var i = 0; i < lines.length; i++){
+          var line = lines[i].trim();
+          if (line.charAt(0) !== '{') {
+            if (line) console.log('[esp32]', line);  // boot / [tof] health logs
+            continue;
+          }
+          var msg;
+          try { msg = JSON.parse(line); } catch (err) { continue; }
+          if (msg.rows) serialHelloSeen = true;
+          onServerMessage(msg);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      closeSerial();
+    }
+  }
+
+  async function closeSerial(){
+    var port = serialPort;
+    serialPort = null;
+    try { if (serialReader) { await serialReader.cancel(); serialReader.releaseLock(); } } catch (err) {}
+    try { if (serialWriter) serialWriter.releaseLock(); } catch (err) {}
+    serialReader = serialWriter = null;
+    try { if (port) await port.close(); } catch (err) {}
+    renderStatus();
+  }
+
+  if ('serial' in navigator){
+    usbBtn.hidden = false;
+    usbBtn.addEventListener('click', function(){ if (serialWriter) closeSerial(); else openSerial(); });
+  }
+
+  function strokeMM(deg){ return crankR * (1 - Math.cos(deg * Math.PI / 180)); }
+
+  function buildCalGrid(){
+    calCells = layoutGrid(calGrid, function(pin){
+      var cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'cal-cell';
+      cell.title = pinLabel(pin) + ' · pin ' + pin;
+      cell.innerHTML = '<span class="cal-fill"></span><span class="cal-label">' + pinLabel(pin) +
+        '</span><span class="cal-angle">0°</span><span class="cal-rev">REV</span>';
+      cell.addEventListener('click', function(){
+        if (calTapMode === 'reverse') espSend({ inv: [pin, isInv(pin) ? 0 : 1] });
+        else espSend({ sweep: pin });
+      });
+      return cell;
+    });
+  }
+
+  /* per-servo direction reverse -- the ESP32 owns the list (NVS) and
+     broadcasts {"inv":[pins]}; this page only renders it and toggles. */
+  var invPins = [];
+  var calTapMode = 'sweep';  // what tapping a servo does: 'sweep' | 'reverse'
+  var calTapSeg = document.getElementById('calTapSeg');
+  var calInvList = document.getElementById('calInvList');
+  var invClearBtn = document.getElementById('invClearBtn');
+
+  function isInv(pin){ return invPins.indexOf(pin) >= 0; }
+
+  function renderInv(){
+    for (var i = 0; i < calCells.length; i++) if (calCells[i]) calCells[i].classList.toggle('is-rev', isInv(i));
+    calInvList.textContent = invPins.length ? invPins.map(function(p){
+      return pinLabel(p) + ' · ' + p;
+    }).join(',  ') : 'None';
+    invClearBtn.hidden = !invPins.length;
+  }
+
+  calTapSeg.addEventListener('click', function(e){
+    var b = e.target.closest('.seg-btn');
+    if (!b) return;
+    calTapMode = b.dataset.tap;
+    Array.prototype.forEach.call(calTapSeg.children, function(x){ x.classList.toggle('active', x === b); });
+    calGrid.classList.toggle('rev-mode', calTapMode === 'reverse');
+  });
+  invClearBtn.addEventListener('click', function(){ espSend({ invClear: 1 }); });
+
+  function setCellAngle(pin, deg){
+    var cell = calCells[pin];
+    if (!cell) return;
+    cell.querySelector('.cal-angle').textContent = deg + '°';
+    // fill height = actual stroke fraction (scotch yoke), not raw angle
+    cell.querySelector('.cal-fill').style.height = (strokeMM(deg) / (2 * crankR) * 100) + '%';
+  }
+
+  function resetAllCells(){
+    for (var i = 0; i < calCells.length; i++){
+      if (!calCells[i]) continue;
+      setCellAngle(i, 0);
+      calCells[i].classList.remove('is-sweeping');
+    }
+  }
+
+  function setCalReadout(deg){
+    calAngleStat.textContent = deg;
+    calStrokeStat.textContent = strokeMM(deg).toFixed(1);
+  }
+
+  function renderCal(){
+    if (!calMode){ calStatus.textContent = 'ALL AT 0°'; setCalReadout(0); }
+  }
+
+  function onServerMessage(msg){
+    if (msg.rows && msg.cols){
+      // hello on connect: matrix shape, crank, ToF availability/range
+      gridRows = msg.rows; gridCols = msg.cols;
+      if (Array.isArray(msg.pos) && msg.pos.length) pinPos = msg.pos;
+      if (msg.crank) crankR = msg.crank;
+      if (msg.tofGrid) tofGridSize = msg.tofGrid;
+      if (msg.near) tofNear = msg.near;
+      if (msg.far) tofFar = msg.far;
+      if (msg.visNear) visNear = msg.visNear;
+      if (msg.visFar) visFar = msg.visFar;
+      if (msg.winMax) { winNearEl.max = winFarEl.max = msg.winMax; }
+      tofOk = msg.tofOk === undefined ? null : !!msg.tofOk;
+      buildCalGrid();
+      buildTofGrid();
+      buildPinGrid();
+      renderTofAvailability();
+      renderWindow();
+    } else if (msg.near !== undefined && msg.far !== undefined){
+      // window changed (by this or another page) -- don't fight an active drag
+      if (!winDragging){ tofNear = msg.near; tofFar = msg.far; renderWindow(); }
+    }
+    if (msg.inv){ invPins = msg.inv; renderInv(); }  // after any grid rebuild above
+    if (msg.resp !== undefined && !respDragging) renderResp(msg.resp);
+    if (msg.bounce !== undefined && !bounceDragging) renderBounce(msg.bounce);
+    // Calibration first: while it's on, the calibration page owns the screen
+    // regardless of the firmware's underlying mode.
+    if (msg.cal !== undefined){
+      calMode = !!msg.cal;
+      sweepingPin = -1;
+      resetAllCells();
+      renderCal();
+      if (calMode) showView(CAL_VIEW);
+      else if (currentMode === CAL_VIEW) showView(0);  // ended elsewhere (another page)
+    }
+    if (msg.mode !== undefined && !calMode) showView(msg.mode);
+    if (msg.tof) onTofFrame(msg.tof, msg.h || []);
+    else if (msg.h) onTiltPins(msg.h);
+    if (msg.sw !== undefined){
+      if (msg.sw < 0){
+        if (sweepingPin >= 0 && calCells[sweepingPin]){
+          calCells[sweepingPin].classList.remove('is-sweeping');
+          calCells[sweepingPin].classList.add('is-done');
+          setCellAngle(sweepingPin, 0);
+        }
+        sweepingPin = -1;
+        calStatus.textContent = 'ALL AT 0°';
+        setCalReadout(0);
+        return;
+      }
+      if (sweepingPin !== msg.sw && sweepingPin >= 0 && calCells[sweepingPin]){
+        calCells[sweepingPin].classList.remove('is-sweeping');
+        setCellAngle(sweepingPin, 0);
+      }
+      sweepingPin = msg.sw;
+      if (calCells[msg.sw]) calCells[msg.sw].classList.add('is-sweeping');
+      setCellAngle(msg.sw, msg.a);
+      calStatus.textContent = 'SWEEPING ' + pinLabel(msg.sw) + ' · PIN ' + msg.sw;
+      setCalReadout(msg.a);
+    }
+  }
+
+  calExitBtn.addEventListener('click', function(){ closeCal(); });
+  zeroBtn.addEventListener('click', function(){
+    // An interrupted sweep isn't a finished check -- drop it locally so the
+    // firmware's {"sw":-1} reply doesn't mark it done.
+    if (sweepingPin >= 0 && calCells[sweepingPin]) calCells[sweepingPin].classList.remove('is-sweeping');
+    sweepingPin = -1;
+    resetAllCells();
+    espSend({ zero: 1 });
+  });
+  buildCalGrid();
+
+  /* ---------- modes: landing / 1 ToF / 2 tilt ---------- */
+  // The ESP32 owns the active mode (it's what drives the pins), so the page
+  // follows its {"mode":n} broadcasts. Buttons also switch the view locally
+  // right away so it doesn't feel laggy, and so the page can be previewed
+  // without the device.
+  // CAL_VIEW is a page-only view: the firmware sits in mode 0 with cal on.
+  var CAL_VIEW = 3;
+  var views = { 0: document.getElementById('viewHome'), 1: document.getElementById('viewTof'),
+                2: document.getElementById('viewTilt'), 3: document.getElementById('viewCal') };
+  var backBtn = document.getElementById('backBtn');
+  var modeCalBtn = document.getElementById('modeCalBtn');
+  var modeTofBtn = document.getElementById('modeTofBtn');
+  var modeTiltBtn = document.getElementById('modeTiltBtn');
+  var tofTag = document.getElementById('tofTag');
+  var homeNote = document.getElementById('homeNote');
+  var currentMode = 0;
+
+  function showView(m){
+    if (!views[m]) return;
+    var changed = m !== currentMode;
+    currentMode = m;
+    for (var k in views) views[k].hidden = (+k !== m);
+    backBtn.hidden = (m === 0);
+    // Desktop layouts for every page (landing tiles, .tof-layout,
+    // .tilt-layout, .cal-layout); 'wide' only does anything at >=1024px.
+    document.body.classList.add('wide');
+    if (m === 2){
+      resizeGraph();  // canvas had 0 width while its view was hidden
+      renderLink();   // hub vs controller panel
+    }
+    if (changed) window.scrollTo(0, 0);
+  }
+
+  function selectMode(m){
+    if (!linkReady()){
+      homeNote.textContent = 'Not connected to the ESP32 · connect USB';
+    }
+    showView(m);
+    espSend({ mode: m });
+  }
+  // Calibration: park the firmware at home (stops ToF/tilt driving the pins),
+  // then turn cal on -- it parks every servo at raw 0deg.
+  function openCal(){
+    if (!linkReady()){
+      homeNote.textContent = 'Not connected to the ESP32 · connect USB';
+    }
+    showView(CAL_VIEW);
+    espSend({ mode: 0 });
+    espSend({ cal: 1 });
+  }
+  function closeCal(){
+    espSend({ cal: 0 });
+    showView(0);
+  }
+
+  modeCalBtn.addEventListener('click', openCal);
+  modeTofBtn.addEventListener('click', function(){ selectMode(1); });
+  modeTiltBtn.addEventListener('click', function(){ selectMode(2); });
+  backBtn.addEventListener('click', function(){ if (currentMode === CAL_VIEW) closeCal(); else selectMode(0); });
+
+  /* ---------- mode 1: ToF range map + pin heights ---------- */
+  var tofGridEl = document.getElementById('tofGrid');
+  var pinGridEl = document.getElementById('pinGrid');
+  var tofEmpty = document.getElementById('tofEmpty');
+  var tofEmptyLabel = document.getElementById('tofEmptyLabel');
+  var tofFrameLabel = document.getElementById('tofFrameLabel');
+  var tofNearestEl = document.getElementById('tofNearest');
+  var tofValidEl = document.getElementById('tofValid');
+  // tofNear/tofFar = pin window (100-600); visNear/visFar = range-map colors.
+  var tofGridSize = 8, tofNear = 100, tofFar = 600, visNear = 200, visFar = 4000, tofOk = null;
+  var tofCells = [], pinCells = [], tofFrames = 0, lastTofAt = 0;
+
+  function buildTofGrid(){
+    tofGridEl.innerHTML = '';
+    tofGridEl.style.gridTemplateColumns = 'repeat(' + tofGridSize + ', minmax(0, 1fr))';
+    tofCells = [];
+    for (var i = 0; i < tofGridSize * tofGridSize; i++){
+      var cell = document.createElement('div');
+      cell.className = 'tof-cell';
+      tofGridEl.appendChild(cell);
+      tofCells.push(cell);
+    }
+    renderLegend();
+  }
+
+  function renderLegend(){
+    document.getElementById('legendNear').textContent = visNear + ' mm';
+    document.getElementById('legendFar').textContent = visFar + ' mm';
+    // Bracket the pin window on the color scale (clamped -- it can start
+    // below visNear, e.g. 100 vs 200).
+    var w = document.getElementById('legendWindow');
+    var a = Math.max(0, (tofNear - visNear) / (visFar - visNear));
+    var b = Math.min(1, (tofFar - visNear) / (visFar - visNear));
+    w.style.left = (a * 100) + '%';
+    w.style.width = (Math.max(0, b - a) * 100) + '%';
+    document.getElementById('legendNote').textContent = 'PIN WINDOW ' + tofNear + ' – ' + tofFar + ' MM';
+  }
+
+  // Same interleaved 8x8 pin view in both modes: ToF (pinGrid) and tilt (tiltPinGrid).
+  var tiltPinGridEl = document.getElementById('tiltPinGrid');
+  var tiltPinLabel = document.getElementById('tiltPinLabel');
+  var tiltPinCells = [];
+
+  function makePinGrid(el){
+    return layoutGrid(el, function(pin){
+      var cell = document.createElement('div');
+      cell.className = 'pin-cell';
+      cell.title = pinLabel(pin) + ' · pin ' + pin;
+      cell.innerHTML = '<span class="pin-fill"></span><span class="pin-val">0.0</span>';
+      return cell;
+    });
+  }
+
+  function buildPinGrid(){
+    pinCells = makePinGrid(pinGridEl);
+    tiltPinCells = makePinGrid(tiltPinGridEl);
+    document.getElementById('pinMaxLabel').textContent = '0 – ' + (2 * crankR).toFixed(1) + ' MM';
+  }
+
+  // heights in 0.1mm, as sent by the firmware
+  function renderPins(cells, heights){
+    var maxH = 2 * crankR;
+    for (var j = 0; j < cells.length && j < heights.length; j++){
+      if (!cells[j]) continue;
+      var h = heights[j] / 10;
+      cells[j].querySelector('.pin-fill').style.height = (h / maxH * 100) + '%';
+      cells[j].querySelector('.pin-val').textContent = h.toFixed(1);
+    }
+  }
+
+  // Tilt mode: {"h":[...]} straight from the ESP32 (or relayed by the hub
+  // to a controller phone).
+  var lastTiltPinAt = 0;
+  function onTiltPins(heights){
+    lastTiltPinAt = performance.now();
+    renderPins(tiltPinCells, heights);
+    tiltPinLabel.textContent = '0 – ' + (2 * crankR).toFixed(1) + ' MM · LIVE';
+    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'pins', h: heights });
+  }
+  setInterval(function(){
+    if (lastTiltPinAt && performance.now() - lastTiltPinAt > 1500) tiltPinLabel.textContent = 'NO DATA FROM ESP32';
+  }, 500);
+
+  function renderTofAvailability(){
+    tofTag.classList.toggle('ok', tofOk === true);
+    tofTag.classList.toggle('bad', tofOk === false);
+    tofTag.textContent = tofOk === true ? 'VL53L5CX · READY' : tofOk === false ? 'VL53L5CX · NOT FOUND' : 'VL53L5CX · CHECKING';
+    modeTofBtn.disabled = tofOk === false;
+    if (tofOk === false) tofEmptyLabel.textContent = 'ToF sensor not found · check wiring and reboot the ESP32';
+  }
+
+  // Range map keeps the ToF visualizer's coral -> yellow -> teal ramp (near ->
+  // far) over 200-4000mm -- deliberately not the deck palette, so depth stays
+  // readable. Independent of the narrower pin window (shown as a box on the legend).
+  var RAMP = [[237,112,84],[242,215,119],[52,168,145]];
+  function distanceColor(d){
+    var t = Math.max(0, Math.min(1, (d - visNear) / (visFar - visNear)));
+    var a, b, u;
+    if (t < 0.52){ a = RAMP[0]; b = RAMP[1]; u = t / 0.52; } else { a = RAMP[1]; b = RAMP[2]; u = (t - 0.52) / 0.48; }
+    return 'rgb(' + Math.round(a[0] + (b[0]-a[0])*u) + ',' + Math.round(a[1] + (b[1]-a[1])*u) + ',' + Math.round(a[2] + (b[2]-a[2])*u) + ')';
+  }
+
+  function paintTofCells(dist){
+    var nearest = Infinity, valid = 0;
+    for (var i = 0; i < tofCells.length && i < dist.length; i++){
+      var d = dist[i];
+      if (d > 0){
+        valid++;
+        if (d < nearest) nearest = d;
+        tofCells[i].style.background = distanceColor(d);
+        tofCells[i].textContent = d;
+      } else {
+        tofCells[i].style.background = '';
+        tofCells[i].textContent = '';
+      }
+    }
+    return { nearest: nearest, valid: valid };
+  }
+
+  function onTofFrame(dist, heights){
+    tofFrames++;
+    lastTofAt = performance.now();
+    tofEmpty.hidden = true;
+    tofFrameLabel.textContent = 'FRAME ' + String(tofFrames).padStart(5, '0');
+    var stats = paintTofCells(dist);
+    var nearest = stats.nearest, valid = stats.valid;
+    tofNearestEl.textContent = valid ? nearest : '--';
+    tofValidEl.textContent = valid;
+    renderPins(pinCells, heights);
+  }
+
+  // No frame for a while -> say so (firmware also drops the pins on its side).
+  setInterval(function(){
+    if (currentMode !== 1 || calMode) return;
+    if (tofFrames && performance.now() - lastTofAt > 1500){
+      tofEmpty.hidden = false;
+      tofEmptyLabel.textContent = 'Signal lost · waiting for sensor data';
+    }
+  }, 500);
+
+  /* ---------- pin window sliders (which distances move the pins) ---------- */
+  // Near = distance that pushes a pin fully up, Far = distance at which it's
+  // fully down. The ESP32 clamps, applies live, and saves to flash.
+  var winNearEl = document.getElementById('winNear');
+  var winFarEl = document.getElementById('winFar');
+  var winNearVal = document.getElementById('winNearVal');
+  var winFarVal = document.getElementById('winFarVal');
+  var winSpanLabel = document.getElementById('winSpanLabel');
+  var presetBtns = document.querySelectorAll('.preset-row .btn');
+  var WIN_GAP = 50;  // = TOF_WIN_MIN_GAP_MM
+  var winDragging = false, winSendTimer = null, lastWinSentAt = 0;
+
+  function renderWindow(){
+    winNearEl.value = tofNear; winFarEl.value = tofFar;
+    winNearVal.textContent = tofNear; winFarVal.textContent = tofFar;
+    winSpanLabel.textContent = 'SPAN ' + (tofFar - tofNear) + ' MM';
+    for (var i = 0; i < presetBtns.length; i++){
+      var b = presetBtns[i];
+      b.classList.toggle('active', +b.dataset.near === tofNear && +b.dataset.far === tofFar);
+    }
+    renderLegend();  // re-places the bracket on the color bar + note
+  }
+
+  // ~12Hz while dragging, plus a final send so the last value always lands.
+  function sendWindow(){
+    clearTimeout(winSendTimer);
+    var wait = 80 - (performance.now() - lastWinSentAt);
+    if (wait > 0){ winSendTimer = setTimeout(sendWindow, wait); return; }
+    lastWinSentAt = performance.now();
+    espSend({ near: tofNear, far: tofFar });
+  }
+
+  function onWinInput(e){
+    winDragging = true;
+    var n = +winNearEl.value, f = +winFarEl.value;
+    // keep near < far by pushing the *other* thumb, so dragging feels natural
+    if (e.target === winNearEl && n > f - WIN_GAP) f = Math.min(+winFarEl.max, n + WIN_GAP);
+    if (e.target === winFarEl && f < n + WIN_GAP) n = Math.max(0, f - WIN_GAP);
+    tofNear = n; tofFar = f;
+    renderWindow();
+    sendWindow();
+  }
+  function endWinDrag(){ winDragging = false; }
+
+  [winNearEl, winFarEl].forEach(function(el){
+    el.addEventListener('input', onWinInput);
+    el.addEventListener('change', endWinDrag);
+  });
+  for (var pi = 0; pi < presetBtns.length; pi++){
+    presetBtns[pi].addEventListener('click', function(){
+      tofNear = +this.dataset.near; tofFar = +this.dataset.far;
+      renderWindow();
+      espSend({ near: tofNear, far: tofFar });
+    });
+  }
+
+  buildTofGrid();
+  buildPinGrid();
+  renderWindow();
+
+  function linkReady(){ return !!serialWriter; }
+
+  var HOME_NOTE = 'Select a mode to start driving the pin matrix.';
+
+  function renderStatus(){
+    var usb = !!serialWriter;
+    // Clear a stale "not connected" warning once either link comes up.
+    if (linkReady()) homeNote.textContent = HOME_NOTE;
+    var ctrl = !!(ctrlConn && ctrlConn.open);
+    statusLabel.textContent = usb ? 'USB connected' : ctrl ? 'Linked to laptop' : 'No ESP32 link';
+    statusEl.classList.toggle('is-connected', linkReady() || ctrl);
+    renderLink();
+    usbBtn.textContent = usb ? 'Disconnect USB' : 'Connect USB';
+    usbBtn.classList.toggle('on', usb);
+  }
+
+  function updateBubble(roll, pitch){
+    var maxDeg = 30;
+    // Travel scales with the frame, which is fluid (up to 360px) rather than fixed.
+    var travel = levelEl.clientWidth / 2 - 15 - 8;
+    var x = Math.max(-1, Math.min(1, roll / maxDeg)) * travel;
+    var y = Math.max(-1, Math.min(1, pitch / maxDeg)) * travel;
+    bubble.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+    rollStat.textContent = roll.toFixed(1);
+    pitchStat.textContent = pitch.toFixed(1);
+  }
+
+  // Biggest |Z jolt| (signed, m/s^2) since the last tilt message actually went
+  // out, so a spike shorter than the send interval still reaches the ESP32.
+  var hzPeak = 0, gzBase = null, tiltSeq = 0;
+  function noteJolt(v){ if (Math.abs(v) > Math.abs(hzPeak)) hzPeak = v; }
+
+  // relayed = hub forwarding a phone sample: the phone already paced it, and
+  // network jitter delivers those in clumps -- throttling again here dropped
+  // about half of them (often the newest), so pass every one through.
+  function sendTilt(roll, pitch, relayed){
+    var now = performance.now();
+    updateBubble(roll, pitch);
+    if (!relayed && now - lastSendAt < SEND_INTERVAL_MS) return;
+    lastSendAt = now;
+    var r = Math.round(roll * 10) / 10, p = Math.round(pitch * 10) / 10;
+    // Controller phone -> laptop hub (which forwards to the ESP32). Raw
+    // x/y/z ride along so the hub's angle graph matches the phone's.
+    if (ctrlConn && ctrlConn.open){
+      var msg = { t: 'tilt', r: r, p: p,
+        x: curX === null ? 0 : Math.round(curX * 10) / 10,
+        y: curY === null ? 0 : Math.round(curY * 10) / 10,
+        z: curZ === null ? 0 : Math.round(curZ * 10) / 10 };
+      if (curA) msg.a = [Math.round(curA[0] * 100) / 100, Math.round(curA[1] * 100) / 100, Math.round(curA[2] * 100) / 100];
+      msg.hz = Math.round(hzPeak * 10) / 10;
+      // s = sequence number: the hub drops a sample that arrives after a newer
+      // one (the direct channel is unordered) and counts gaps as losses.
+      msg.s = tiltSeq + 1;
+      if (ctrlConn.send(msg) !== false){ hzPeak = 0; tiltSeq++; }  // relay may drop a throttled send
+      return;
+    }
+    if (linkReady() && !calMode && currentMode === 2){
+      espSend({ r: r, p: p, hz: Math.round(hzPeak * 10) / 10 });
+      hzPeak = 0;
+    }
+  }
+
+  /* ---------- live strip charts (LUCKY DRAW debug-graph pattern) ---------- */
+  // Two charts, same X/Y/Z colors:
+  //  - ANGLE: X = beta (front/back), Y = gamma (left/right), Z = alpha
+  //    (compass heading, wrapped to -180..180 so it shares the axis).
+  //  - ACCEL: accelerationIncludingGravity x/y/z in m/s^2 (DeviceMotion),
+  //    same signal LUCKY DRAW graphed. Lying flat reads ~(0, 0, -9.8).
+  // Raw, untared, unsmoothed -- this shows what the sensors actually report.
+  var GRAPH_LEN = 240;      // samples on screen (~4s at 60fps)
+  var AXIS_COLORS = ['#e4572e', '#2a9d5c', '#3b6fd4'];  // X red-orange, Y green, Z blue
+  var curX = null, curY = null, curZ = null;            // orientation, deg
+  var curA = null;                                      // [ax, ay, az] m/s^2
+  var sensorActive = false, lastOrientationAt = 0;
+  var motionActive = false, lastMotionAt = 0;
+
+  function StripChart(canvas, opts){
+    var ctx = canvas.getContext('2d');
+    var buf = [[], [], []];
+    function resize(){
+      var dpr = window.devicePixelRatio || 1;
+      var rect = canvas.getBoundingClientRect();
+      // CSS owns the size (140px on mobile, fills the column on desktop);
+      // match the backing store to it so lines stay crisp.
+      if (rect.width && rect.height){
+        canvas.width = Math.round(rect.width * dpr);
+        canvas.height = Math.round(rect.height * dpr);
+      }
+    }
+    function sample(){
+      var v = opts.source();
+      if (!v) return;
+      for (var k = 0; k < 3; k++){
+        buf[k].push(v[k]);
+        if (buf[k].length > GRAPH_LEN) buf[k].shift();
+        opts.valEls[k].textContent = v[k].toFixed(1);
+      }
+    }
+    function draw(){
+      var w = canvas.width, h = canvas.height;
+      if (!w || !h) return;
+      var dpr = window.devicePixelRatio || 1;
+      var midY = h / 2, big = window.innerWidth >= 1024;
+      ctx.clearRect(0, 0, w, h);
+      // grid: 0 solid, reference lines dashed
+      ctx.lineWidth = dpr;
+      ctx.strokeStyle = '#d0d0cc';
+      ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(w, midY); ctx.stroke();
+      ctx.setLineDash([4 * dpr, 4 * dpr]);
+      ctx.fillStyle = '#8a8a86';
+      ctx.font = ((big ? 12 : 9) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
+      opts.grid.forEach(function(g){
+        var y = midY - (g.v / opts.range) * midY;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+        ctx.fillText(g.label, 6 * dpr, y - 4 * dpr);
+      });
+      ctx.setLineDash([]);
+      for (var k = 0; k < 3; k++){
+        var arr = buf[k];
+        if (arr.length < 2) continue;
+        ctx.strokeStyle = AXIS_COLORS[k];
+        ctx.lineWidth = 1.75 * dpr;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        for (var i = 0; i < arr.length; i++){
+          var x = (i / (GRAPH_LEN - 1)) * w;
+          var y = midY - (Math.max(-opts.range, Math.min(opts.range, arr[i])) / opts.range) * midY;
+          // angle chart: break the line on a +/-180 wrap instead of a full-height spike
+          if (i === 0 || (opts.wrap && Math.abs(arr[i] - arr[i - 1]) > 180)) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      if (opts.active() && performance.now() - opts.lastAt() > 500){
+        ctx.fillStyle = '#b4430a';
+        ctx.font = '600 ' + ((big ? 13 : 11) * dpr) + 'px Inter, -apple-system, "Segoe UI", sans-serif';
+        ctx.textAlign = 'right'; ctx.fillText('SIGNAL LOST', w - 8 * dpr, 18 * dpr); ctx.textAlign = 'left';
+      }
+    }
+    window.addEventListener('resize', resize);
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
+    resize();
+    return { resize: resize, sample: sample, draw: draw };
+  }
+
+  var angleChart = StripChart(document.getElementById('angleGraph'), {
+    range: 180, wrap: true,
+    grid: [{ v: 90, label: '+90' }, { v: -90, label: '-90' }],
+    valEls: [document.getElementById('xVal'), document.getElementById('yVal'), document.getElementById('zVal')],
+    source: function(){ return curX === null ? null : [curX, curY, curZ]; },
+    active: function(){ return sensorActive; }, lastAt: function(){ return lastOrientationAt; }
+  });
+  var accelChart = StripChart(document.getElementById('accelGraph'), {
+    range: 20, wrap: false,
+    grid: [{ v: 9.81, label: '+1g' }, { v: -9.81, label: '-1g' }],
+    valEls: [document.getElementById('axVal'), document.getElementById('ayVal'), document.getElementById('azVal')],
+    source: function(){ return curA; },
+    active: function(){ return motionActive; }, lastAt: function(){ return lastMotionAt; }
+  });
+
+  function resizeGraph(){ angleChart.resize(); accelChart.resize(); }
+
+  // Sample once per frame from the latest values, so the time axis stays
+  // uniform regardless of how often the sensor (or a slider) fires.
+  function graphLoop(){
+    angleChart.sample(); accelChart.sample();
+    angleChart.draw(); accelChart.draw();
+    requestAnimationFrame(graphLoop);
+  }
+  requestAnimationFrame(graphLoop);
+  // Light 50/50 smoothing only -- just enough to tame raw sensor jitter
+  // (~1 sample of lag). Any deliberate "water" lag comes from the ESP32's
+  // spring, set by the RESPONSE slider.
+  function onOrientation(e){
+    if (e.beta === null || e.gamma === null) return;
+    sensorActive = true;
+    lastOrientationAt = performance.now();
+    var a = e.alpha || 0;
+    curX = e.beta; curY = e.gamma; curZ = a > 180 ? a - 360 : a;
+    smRoll = smRoll * 0.5 + (e.gamma || 0) * 0.5;
+    smPitch = smPitch * 0.5 + (e.beta || 0) * 0.5;
+    sendTilt(smRoll - tareRoll, smPitch - tarePitch);
+  }
+
+  // Accelerometer (incl. gravity), for the second chart only -- it doesn't
+  // drive the pins. Rides along with the tilt samples sent to the hub.
+  function onMotion(e){
+    var g = e.accelerationIncludingGravity;
+    if (!g || typeof g.x !== 'number') return;  // some browsers fire empty events
+    motionActive = true;
+    lastMotionAt = performance.now();
+    curA = [g.x || 0, g.y || 0, g.z || 0];
+    // Bounce input: Z acceleration with gravity removed. iOS gives it directly
+    // (e.acceleration); otherwise high-pass the gravity-included value.
+    var lin = e.acceleration;
+    var jz;
+    if (lin && typeof lin.z === 'number') jz = lin.z;
+    else { gzBase = gzBase === null ? curA[2] : gzBase * 0.95 + curA[2] * 0.05; jz = curA[2] - gzBase; }
+    noteJolt(jz);
+  }
+
+  function showFallback(msg){
+    fallbackPanel.classList.add('show');
+    if (msg) noteEl.textContent = msg;
+  }
+
+  // Same iOS constraint as LUCKY DRAW's shake button: requestPermission()
+  // must be called synchronously inside a real click handler, nothing
+  // earlier in the gesture.
+  function ensurePermission(){
+    // iOS gates motion (accelerometer) separately from orientation. Both
+    // requests are fired synchronously in this same tap, before any await,
+    // so both count as user-initiated.
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
+      DeviceMotionEvent.requestPermission().then(function(res){
+        if (res === 'granted') window.addEventListener('devicemotion', onMotion);
+      }).catch(function(){});
+    } else if (typeof DeviceMotionEvent !== 'undefined'){
+      window.addEventListener('devicemotion', onMotion);
+    }
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+      DeviceOrientationEvent.requestPermission().then(function(res){
+        if (res === 'granted'){
+          window.addEventListener('deviceorientation', onOrientation);
+          noteEl.textContent = 'Motion sensor active · tilt the phone';
+        } else {
+          showFallback('Motion permission denied · use the sliders below to test');
+        }
+      }).catch(function(){
+        showFallback('Permission request failed · use the sliders below to test');
+      });
+    } else if (typeof DeviceOrientationEvent !== 'undefined'){
+      window.addEventListener('deviceorientation', onOrientation);
+      noteEl.textContent = 'Motion sensor active · tilt the phone';
+    } else {
+      showFallback('No motion sensor on this device/browser · use the sliders below to test');
+    }
+  }
+
+  startBtn.addEventListener('click', ensurePermission);
+  tareBtn.addEventListener('click', function(){ tareRoll = smRoll; tarePitch = smPitch; });
+
+  function onSlider(){
+    var r = +rollSlider.value, p = +pitchSlider.value;
+    rollVal.textContent = r; pitchVal.textContent = p;
+    curX = p; curY = r; if (curZ === null) curZ = 0;
+    sendTilt(r, p);
+  }
+  rollSlider.addEventListener('input', onSlider);
+  pitchSlider.addEventListener('input', onSlider);
+
+  /* ---------- tilt response slider ({"resp":0..100} -> ESP32 spring) ---------- */
+  var respRow = document.getElementById('respRow');
+  var respSlider = document.getElementById('respSlider');
+  var respVal = document.getElementById('respVal');
+  var respDragging = false, respTimer = null, lastRespSentAt = 0;
+
+  function respLabel(v){ return v >= 100 ? '100 · instant' : v <= 15 ? v + ' · water' : String(v); }
+  function renderResp(v){ respSlider.value = v; respVal.textContent = respLabel(+v); }
+
+  function sendResp(){
+    clearTimeout(respTimer);
+    var wait = 80 - (performance.now() - lastRespSentAt);
+    if (wait > 0){ respTimer = setTimeout(sendResp, wait); return; }
+    lastRespSentAt = performance.now();
+    espSend({ resp: +respSlider.value });
+  }
+  respSlider.addEventListener('input', function(){
+    respDragging = true;
+    respVal.textContent = respLabel(+respSlider.value);
+    sendResp();
+  });
+  respSlider.addEventListener('change', function(){ respDragging = false; sendResp(); });
+
+  /* ---------- bounce slider ({"bounce":0..100} -> ESP32 heave gain) ---------- */
+  var bounceSlider = document.getElementById('bounceSlider');
+  var bounceVal = document.getElementById('bounceVal');
+  var bounceDragging = false, bounceTimer = null, lastBounceSentAt = 0;
+  function bounceLabel(v){ return v <= 0 ? '0 · off' : String(v); }
+  function renderBounce(v){ bounceSlider.value = v; bounceVal.textContent = bounceLabel(+v); }
+  function sendBounce(){
+    clearTimeout(bounceTimer);
+    var wait = 80 - (performance.now() - lastBounceSentAt);
+    if (wait > 0){ bounceTimer = setTimeout(sendBounce, wait); return; }
+    lastBounceSentAt = performance.now();
+    espSend({ bounce: +bounceSlider.value });
+  }
+  bounceSlider.addEventListener('input', function(){
+    bounceDragging = true;
+    bounceVal.textContent = bounceLabel(+bounceSlider.value);
+    sendBounce();
+  });
+  bounceSlider.addEventListener('change', function(){ bounceDragging = false; sendBounce(); });
+
+  /* ---------- phone link: laptop HUB <-> iPhone CONTROLLER (PeerJS) ---------- */
+  // Same pattern as LUCKY DRAW: WebRTC data channel brokered by PeerJS's free
+  // public signaling server -- no server of our own, no ESP32 Wi-Fi. The device
+  // that has the ESP32 link (USB) hosts a short room code; the phone joins it
+  // and streams tilt; the hub shows it (bubble + graph) and relays r/p over
+  // USB. Libraries load on demand so the ESP32-served offline page never
+  // blocks on a CDN it can't reach.
+  var PEER_PREFIX = 'pindisplay26-';
+  var PEERJS_URL = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';
+  var QR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+
+  // Fallback relay for when phone and laptop are on different networks and
+  // WebRTC can't punch through (cellular CGNAT, school/office firewalls --
+  // PeerJS's own TURN is UDP:3478 only and often blocked). Messages then go
+  // phone -> public MQTT broker (secure WebSocket) -> laptop, which gets
+  // through nearly anything a web page can. Same JSON messages as the direct
+  // link, just rate-limited. Topics: <RELAY_TOPIC><CODE>/up (phone->hub) and
+  // /down (hub->phone). Public broker = no auth: fine for tilt data, but
+  // anyone who knows a room code could publish to it.
+  var MQTT_URL = 'https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';
+  // Order matters (hub and phone must land on the same one). Measured from
+  // Korea at 20 msg/s: HiveMQ (Frankfurt) delivered 160/160 at a steady ~270ms
+  // end to end; EMQX (US West) is nearer but rate-limits public clients --
+  // only 80/160 arrived, p90 ~900ms. Reliable beats near, so HiveMQ first.
+  var RELAY_BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
+  var RELAY_TOPIC = 'pindisplay26/rooms/';
+  var DIRECT_TIMEOUT_MS = 6000;   // no direct link by then -> use the relay
+  // Optional dedicated TURN servers (e.g. from metered.ca) for faster direct
+  // links across networks; empty = PeerJS defaults.
+  var TURN_SERVERS = [];
+  // Cloudflare Realtime TURN credentials ({"exp":unix s,"iceServers":[...]},
+  // from scripts/turn_creds.ps1). Phone on LTE (carrier CGNAT) <-> laptop on
+  // Wi-Fi can't punch a direct path, and PeerJS's own TURN is EU/US UDP-only
+  // -- Cloudflare's anycast TURN (Seoul PoP) keeps that link fast. Never in
+  // this public page's source: pasted on the laptop (kept in localStorage);
+  // only the hub needs them.
+  var TURN_STORE = 'pdTurn';
+  function readTurn(){
+    try {
+      var t = JSON.parse(localStorage.getItem(TURN_STORE) || 'null');
+      if (t && t.iceServers && t.iceServers.length && (!t.exp || t.exp * 1000 > Date.now())) return t;
+    } catch (e) {}
+    return null;
+  }
+  function saveTurn(t){
+    try { if (t) localStorage.setItem(TURN_STORE, JSON.stringify(t)); else localStorage.removeItem(TURN_STORE); } catch (e) {}
+  }
+  var turnCfg = readTurn();
+
+  // Compact form for the join QR (see joinUrl): Cloudflare's hex username and
+  // credential as base64url, joined by '.'. Null for anything else.
+  var CF_TURN_URLS = ['turn:turn.cloudflare.com:3478?transport=udp', 'turn:turn.cloudflare.com:443?transport=udp',
+    'turn:turn.cloudflare.com:3478?transport=tcp', 'turns:turn.cloudflare.com:5349?transport=tcp',
+    'turns:turn.cloudflare.com:443?transport=tcp'];
+  function hexToB64u(h){
+    var s = '';
+    for (var i = 0; i < h.length; i += 2) s += String.fromCharCode(parseInt(h.substr(i, 2), 16));
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64uToHex(b){
+    var s = atob(b.replace(/-/g, '+').replace(/_/g, '/')), h = '';
+    for (var i = 0; i < s.length; i++) h += ('0' + s.charCodeAt(i).toString(16)).slice(-2);
+    return h;
+  }
+  function compactTurn(cfg){
+    if (!cfg) return null;
+    var srv = cfg.iceServers.filter(function(s){
+      return s.username && [].concat(s.urls).some(function(u){ return /turn\.cloudflare\.com/.test(u); });
+    })[0];
+    if (!srv || !/^([0-9a-f]{2})+$/i.test(srv.username) || !/^([0-9a-f]{2})+$/i.test(srv.credential)) return null;
+    return hexToB64u(srv.username) + '.' + hexToB64u(srv.credential);
+  }
+  // Phone: TURN from the join link (in memory only -- every join brings fresh
+  // ones); the hub also sends it over the relay ('turn' message).
+  var phoneTurnFrom = 'qr';
+  (function(){
+    var t = new URLSearchParams(location.search).get('t');
+    var m = t && /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(t);
+    if (!m) return;
+    try {
+      turnCfg = { iceServers: [{ urls: ['stun:stun.cloudflare.com:3478'] },
+        { urls: CF_TURN_URLS, username: b64uToHex(m[1]), credential: b64uToHex(m[2]) }] };
+    } catch (e) {}
+  })();
+
+  // Why a direct (WebRTC) attempt didn't make it, for the status line / log:
+  // ICE state plus which candidate types each side gathered -- no "relay"
+  // locally means this browser never got a TURN allocation.
+  // PeerJS drops conn.peerConnection once a link fails, so record the ICE
+  // story as it happens: state sequence + local candidate types gathered.
+  function trackIce(conn){
+    var pc = conn.peerConnection;
+    if (!pc){ setTimeout(function(){ if (conn.peerConnection && !conn.iceTrace) trackIce(conn); }, 0); return; }
+    var tr = conn.iceTrace = { states: [], local: {} };
+    pc.addEventListener('iceconnectionstatechange', function(){ tr.states.push(pc.iceConnectionState); });
+    pc.addEventListener('icecandidate', function(e){
+      var m = e.candidate && / typ (\w+)/.exec(e.candidate.candidate);
+      if (m) tr.local[m[1]] = 1;
+    });
+  }
+  /* ---------- P2P upgrade over the relay ---------- */
+  // PeerJS's public signaling server never delivered an LTE phone's ICE
+  // candidates to the hub, so its direct link always died. The MQTT relay
+  // does get through, so once a phone is on the relay the two sides swap a
+  // complete (non-trickle) offer/answer over it and open their own WebRTC
+  // data channel -- with Cloudflare TURN on both ends that connects even
+  // through carrier CGNAT. It then carries tilt/pins/hub state exactly like a
+  // PeerJS link; the relay stays up underneath (keep-alive, webcam snapshots)
+  // and takes back over if the channel drops.
+  function rtcConfig(){
+    return { iceServers: turnCfg ? turnCfg.iceServers : [{ urls: 'stun:stun.l.google.com:19302' }] };
+  }
+  // full candidate list in one SDP -- the relay is the only signaling we have
+  function gatherAll(pc){
+    return new Promise(function(resolve){
+      if (pc.iceGatheringState === 'complete'){ resolve(); return; }
+      var t = setTimeout(resolve, 4000);  // TURN usually answers in <200ms
+      pc.addEventListener('icegatheringstatechange', function(){
+        if (pc.iceGatheringState === 'complete'){ clearTimeout(t); resolve(); }
+      });
+    });
+  }
+  // Same shape as a PeerJS / relay link (kind, open, send, close).
+  // Unordered + no retransmits: a late tilt sample is worthless.
+  function rtcLink(pc){
+    return {
+      kind: 'rtc', open: false, peerConnection: pc, dc: null,
+      send: function(msg){
+        var dc = this.dc;
+        if (!this.open || !dc || dc.readyState !== 'open') return false;
+        if ((msg.t === 'tilt' || msg.t === 'pins') && dc.bufferedAmount > 16384) return false;
+        dc.send(JSON.stringify(msg));
+        return true;
+      },
+      close: function(){ this.open = false; try { this.peerConnection.close(); } catch (e) {} }
+    };
+  }
+
+  function traceText(conn){
+    var tr = conn && conn.iceTrace;
+    if (!tr) return 'no ICE trace';
+    return 'closed · ICE ' + (tr.states.join('>') || 'never started') + ' · local ' + (Object.keys(tr.local).join('+') || 'none');
+  }
+  function iceSummary(conn, cb){
+    var pc = conn && conn.peerConnection;
+    if (!pc || !pc.getStats){ cb(traceText(conn)); return; }
+    pc.getStats().then(function(stats){
+      var loc = {}, rem = {};
+      stats.forEach(function(s){
+        if (s.type === 'local-candidate') loc[s.candidateType] = 1;
+        if (s.type === 'remote-candidate') rem[s.candidateType] = 1;
+      });
+      cb('ICE ' + pc.iceConnectionState + ' · local ' + (Object.keys(loc).join('+') || 'none') +
+        ' · remote ' + (Object.keys(rem).join('+') || 'none'));
+    }).catch(function(){ cb('ICE ' + pc.iceConnectionState); });
+  }
+
+  // Can this browser get a TURN allocation at all? Relay-only ICE gathering
+  // against the stored credentials: a "relay" candidate = TURN works here.
+  function testTurn(done){
+    if (!turnCfg){ done('no TURN credentials set'); return; }
+    var pc, finished = false, t0 = performance.now();
+    function finish(msg){ if (finished) return; finished = true; try { pc.close(); } catch (e) {} done(msg); }
+    try { pc = new RTCPeerConnection({ iceServers: turnCfg.iceServers, iceTransportPolicy: 'relay' }); }
+    catch (e){ done('RTCPeerConnection rejected the config: ' + e.message); return; }
+    pc.createDataChannel('turntest');
+    pc.onicecandidate = function(e){
+      if (e.candidate && / typ relay /.test(e.candidate.candidate)) finish('OK · relay in ' + Math.round(performance.now() - t0) + 'ms');
+    };
+    pc.onicegatheringstatechange = function(){ if (pc.iceGatheringState === 'complete') finish('FAILED · no relay candidate (credentials expired/wrong, or UDP+TCP to Cloudflare blocked)'); };
+    pc.createOffer().then(function(o){ return pc.setLocalDescription(o); }).catch(function(e){ finish('FAILED · ' + e.message); });
+    setTimeout(function(){ finish('FAILED · timed out (8s)'); }, 8000);
+  }
+  function peerOpts(){
+    var o = { debug: 1 };
+    if (turnCfg) o.config = { iceServers: turnCfg.iceServers };
+    else if (TURN_SERVERS.length) o.config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }].concat(TURN_SERVERS) };
+    return o;
+  }
+
+  // Connect to the first reachable relay broker.
+  function connectRelay(onReady, onFail){
+    loadScript(MQTT_URL).then(function(){
+      var i = 0;
+      (function tryNext(){
+        if (i >= RELAY_BROKERS.length){ onFail(); return; }
+        var url = RELAY_BROKERS[i++];
+        var client = mqtt.connect(url, { clientId: 'pd26-' + Math.random().toString(36).slice(2, 10),
+          clean: true, connectTimeout: 5000, reconnectPeriod: 2000 });
+        var settled = false;
+        function fail(){ if (settled) return; settled = true; try { client.end(true); } catch (e) {} tryNext(); }
+        client.on('connect', function(){ if (settled) return; settled = true; onReady(client); });
+        client.on('error', fail);
+        setTimeout(fail, 6000);
+      })();
+    }).catch(onFail);
+  }
+
+  // Wrap a relay topic so it looks like a PeerJS DataConnection (open/send/
+  // close) to the rest of the code. Streams (tilt/pins) are rate-limited to
+  // be polite to the public broker; one-off messages always go through.
+  function relayLink(client, topicOut, minIntervalMs){
+    var last = 0;
+    return {
+      kind: 'relay', open: true, client: client,
+      send: function(msg){
+        if (!this.open) return false;
+        var now = performance.now();
+        if (msg.t === 'tilt' || msg.t === 'pins'){
+          if (now - last < minIntervalMs) return false;  // dropped -- caller keeps its peak
+          last = now;
+        }
+        client.publish(topicOut, JSON.stringify(msg), { qos: 0 });
+        return true;
+      },
+      close: function(){ this.open = false; }
+    };
+  }
+  var linkRoleEl = document.getElementById('linkRole');
+  var hubBlock = document.getElementById('hubBlock');
+  var hubCodeEl = document.getElementById('hubCode');
+  var hubQr = document.getElementById('hubQr');
+  var hubUrlEl = document.getElementById('hubUrl');
+  var hubStatus = document.getElementById('hubStatus');
+  var ctrlBlock = document.getElementById('ctrlBlock');
+  var joinCodeEl = document.getElementById('joinCode');
+  var joinBtn = document.getElementById('joinBtn');
+  var ctrlStatus = document.getElementById('ctrlStatus');
+
+  var hubPeer = null, hubCode = null, phoneConn = null, phoneMsgs = 0, phoneRate = 0;
+  var ctrlPeer = null, ctrlConn = null, hubEspLinked = false;
+  var joinParam = (new URLSearchParams(location.search).get('join') || '').toUpperCase();
+  var scriptCache = {};
+
+  function loadScript(url){
+    if (!scriptCache[url]){
+      scriptCache[url] = new Promise(function(resolve, reject){
+        var s = document.createElement('script');
+        s.src = url; s.onload = resolve;
+        s.onerror = function(){ delete scriptCache[url]; reject(new Error('load failed')); };
+        document.head.appendChild(s);
+      });
+    }
+    return scriptCache[url];
+  }
+
+  function setLinkStatus(el, text, cls){
+    el.textContent = text;
+    el.classList.toggle('ok', cls === 'ok');
+    el.classList.toggle('bad', cls === 'bad');
+  }
+
+  // HUB = this device can reach the ESP32 itself (USB) and isn't already a
+  // controller. Everything else is a phone.
+  function isHub(){ return linkReady() && !ctrlConn; }
+
+  function renderLink(){
+    if (currentMode !== 2) return;
+    var hub = isHub();
+    hubBlock.hidden = !hub;
+    ctrlBlock.hidden = hub;
+    linkRoleEl.textContent = hub ? 'HUB · SPECTATOR' : 'CONTROLLER';
+    // response is an ESP32 setting -- only the device wired to it can change it
+    respRow.hidden = !hub;
+    camHub.hidden = !hub;
+    if (hub) startHub();
+  }
+
+  function randomCode(len){
+    var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I -- easy to read aloud
+    var s = '';
+    for (var i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
+    return s;
+  }
+
+  // Short on purpose: carrying the TURN credentials too made the QR too
+  // dense to scan. The hub's own TURN allocation is enough -- the phone (even
+  // behind LTE CGNAT) reaches the hub's relay address from its side.
+  // &v= is a cache-buster: Pages serves max-age=600, and the room code is
+  // reused across reloads, so the same join URL kept opening a stale page.
+  // &t= gives the phone TURN too: an LTE phone (carrier CGNAT) never got a
+  // working path with only the hub on TURN. Just Cloudflare's username +
+  // credential, hex packed to base64url (~130 chars), so the QR stays
+  // scannable -- the phone rebuilds Cloudflare's fixed server URLs itself.
+  hubQr.addEventListener('click', function(){ hubQr.classList.toggle('zoom'); });
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape') hubQr.classList.remove('zoom'); });
+
+  function joinUrl(code){
+    var t = compactTurn(turnCfg);
+    return location.origin + location.pathname + '?join=' + code + (t ? '&t=' + t : '') + '&v=' + Date.now().toString(36);
+  }
+
+  // Hub: paste / clear TURN credentials. Reload so the room reopens (same
+  // code) with the new ICE servers and the QR carries them.
+  function renderTurnRow(){
+    if (!turnCfg){ turnStatusEl.textContent = 'TURN · OFF (LTE phones fall back to the slow relay)'; turnBtn.textContent = 'Set TURN'; return; }
+    var d = turnCfg.exp ? new Date(turnCfg.exp * 1000) : null;
+    turnStatusEl.textContent = 'TURN · ON' + (d ? ' · until ' + d.toLocaleDateString() : '');
+    turnBtn.textContent = 'Change TURN';
+  }
+  var turnStatusEl = document.getElementById('turnStatus');
+  var turnBtn = document.getElementById('turnBtn');
+  var turnClearBtn = document.getElementById('turnClearBtn');
+  turnBtn.addEventListener('click', function(){
+    var raw = prompt('Paste the JSON from scripts/turn_creds.ps1 (it is on your clipboard):');
+    if (!raw) return;
+    var t;
+    try { t = JSON.parse(raw); } catch (e) { alert('Not valid JSON'); return; }
+    if (Array.isArray(t)) t = { iceServers: t };
+    if (!t || !Array.isArray(t.iceServers) || !t.iceServers.length){ alert('No iceServers in that JSON'); return; }
+    if (t.exp && t.exp * 1000 <= Date.now()){ alert('Those credentials have already expired'); return; }
+    saveTurn(t);
+    location.reload();
+  });
+  document.getElementById('turnTestBtn').addEventListener('click', function(){
+    turnStatusEl.textContent = 'TURN · testing…';
+    testTurn(function(msg){
+      renderTurnRow();
+      turnStatusEl.textContent += ' · test: ' + msg;
+      console.log('[turn] test: ' + msg);
+    });
+  });
+  turnClearBtn.addEventListener('click', function(){
+    if (!turnCfg || !confirm('Remove the TURN credentials from this browser?')) return;
+    saveTurn(null);
+    location.reload();
+  });
+  renderTurnRow();
+
+  function startHub(){
+    if (hubPeer) return;
+    hubPeer = 'pending';
+    setLinkStatus(hubStatus, 'Opening room…');
+    loadScript(PEERJS_URL).then(function(){
+      // Keep the code across reloads of this tab so a phone can rejoin as-is.
+      var saved = null;
+      try { saved = sessionStorage.getItem('pdHubCode'); } catch (e) {}
+      openHubPeer(saved || randomCode(4));
+    }).catch(function(){
+      hubPeer = null;
+      setLinkStatus(hubStatus, 'Phone link needs internet (PeerJS CDN unreachable)', 'bad');
+    });
+  }
+
+  function openHubPeer(code){
+    var peer = new Peer(PEER_PREFIX + code, peerOpts());
+    hubPeer = peer;
+    peer.on('open', function(){
+      hubCode = code;
+      startHubRelay(code);
+      try { sessionStorage.setItem('pdHubCode', code); } catch (e) {}
+      hubCodeEl.textContent = code;
+      var url = joinUrl(code);
+      var hosted = location.protocol === 'https:';
+      hubUrlEl.textContent = hosted ? url : 'Open this page over HTTPS for the QR to work on iPhone';
+      hubQr.innerHTML = '';
+      if (hosted){
+        loadScript(QR_URL).then(function(){
+          // low error correction = fewest modules = easiest scan off a screen
+          new QRCode(hubQr, { text: url, width: 240, height: 240, colorDark: '#202020', colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.L });
+        }).catch(function(){ hubQr.textContent = 'QR unavailable'; });
+      } else {
+        hubQr.textContent = 'NO HTTPS';
+      }
+      setLinkStatus(hubStatus, 'Waiting for phone…');
+    });
+    peer.on('connection', function(conn){
+      // One controller at a time -- a new phone replaces the old one.
+      if (phoneConn && phoneConn !== conn) { try { phoneConn.close(); } catch (e) {} }
+      phoneConn = conn;
+      lastDirectConn = conn;
+      conn.kind = 'direct';
+      trackIce(conn);
+      conn.on('open', function(){
+        // opened after the phone fell back to the relay: direct wins
+        if (phoneConn !== conn){
+          if (phoneConn && phoneConn.kind === 'relay') phoneConn.close();
+          phoneConn = conn;
+        }
+        setLinkStatus(hubStatus, 'Phone connected · DIRECT', 'ok');
+        if (currentMode !== 2) selectMode(2);
+        sendHubState();
+        offerCamToPhone();
+      });
+      conn.on('data', function(msg){ conn.lastRxAt = performance.now(); onPhoneData(msg); });
+      conn.on('close', function(){
+        if (phoneConn !== conn) return;
+        phoneConn = null;
+        setLinkStatus(hubStatus, 'Phone disconnected · waiting…', 'bad');
+      });
+      conn.on('error', function(){});
+    });
+    peer.on('error', function(err){
+      if (err && err.type === 'unavailable-id'){
+        // code taken (old tab still open, or a collision) -- pick a fresh one
+        try { sessionStorage.removeItem('pdHubCode'); } catch (e) {}
+        peer.destroy();
+        openHubPeer(randomCode(4));
+        return;
+      }
+      setLinkStatus(hubStatus, 'Link error: ' + (err && err.type ? err.type : err), 'bad');
+    });
+    peer.on('disconnected', function(){
+      // lost the signaling server (sleep / network blip) -- existing data
+      // channels keep working, but reconnect so new joins still find us
+      try { peer.reconnect(); } catch (e) {}
+    });
+  }
+
+  // Hub also listens on the relay topic for its room, so a phone that can't
+  // reach it directly still gets through.
+  var hubRelay = null, relayPhone = null, relayPhoneSeenAt = 0;
+  // The hub listens on EVERY relay broker at once, so a phone always finds
+  // it even if one side had to fail over to the backup broker. Replies go
+  // back on whichever broker the phone is actually using.
+  function startHubRelay(code){
+    if (hubRelay) return;
+    hubRelay = [];
+    var base = RELAY_TOPIC + code;
+    loadScript(MQTT_URL).then(function(){
+      RELAY_BROKERS.forEach(function(url){
+        var client = mqtt.connect(url, { clientId: 'pd26h-' + Math.random().toString(36).slice(2, 10),
+          clean: true, connectTimeout: 5000, reconnectPeriod: 3000 });
+        hubRelay.push(client);
+        client.on('connect', function(){ client.subscribe(base + '/up'); });
+        client.on('error', function(){});  // keeps retrying; other broker covers meanwhile
+        client.on('message', function(topic, payload){
+          var msg;
+          try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+          // A live direct link (open AND actually delivering) wins: relay
+          // stragglers must not pull the hub back onto the relay. Their tilt
+          // still goes through onPhoneData, whose seq check drops duplicates
+          // -- so a direct link that's open but stalled (ICE disconnected)
+          // can't swallow the samples that are only arriving via the relay.
+          if (msg.t === 'rtcOffer'){ answerRtc(client, base, msg.sdp); relayPhoneSeenAt = performance.now(); return; }
+          var directLive = phoneConn && phoneConn.open && (phoneConn.kind === 'direct' || phoneConn.kind === 'rtc') &&
+            performance.now() - (phoneConn.lastRxAt || 0) < 1500;
+          if (directLive){
+            // keep the relayed side alive under a P2P link (keep-alives, webcam snapshots)
+            if (phoneConn.kind === 'rtc' && relayPhone && relayPhone.client === client) relayPhoneSeenAt = performance.now();
+            if (msg.t === 'tilt') onPhoneData(msg);
+            if (msg.t === 'camAck') onSnapAck(msg.id);
+            return;
+          }
+          relayPhoneSeenAt = performance.now();
+          if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone || relayPhone.client !== client){
+            // a relayed phone takes over. A direct link still negotiating (ICE
+            // via TURN can outlast the phone's fallback timer) is left alone
+            // so it can still take over once it opens.
+            if (phoneConn && phoneConn !== relayPhone && phoneConn.kind !== 'direct' && phoneConn.kind !== 'rtc') { try { phoneConn.close(); } catch (e) {} }
+            relayPhone = relayLink(client, base + '/down', 200);  // pins to phone at ~5Hz
+            phoneConn = relayPhone;
+            // The phone needs TURN too for the P2P upgrade (CGNAT), and the QR
+            // token doesn't always make it -- hand it over here, before the
+            // first hub state, which is what makes the phone send its offer.
+            if (turnCfg) relayPhone.send({ t: 'turn', ice: turnCfg.iceServers });
+            setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
+            if (currentMode !== 2) selectMode(2);
+            sendHubState();
+            offerCamToPhone();
+          }
+          if (msg.t === 'camAck') onSnapAck(msg.id);
+          if (msg.t === 'tilt') onPhoneData(msg);
+        });
+      });
+    }).catch(function(){ hubRelay = null; });  // relay unreachable: direct links still work
+  }
+  // Hub half of the P2P upgrade (see rtcLink): answer the phone's offer on
+  // the relay it came from; once the channel opens it becomes phoneConn.
+  var hubRtc = null;
+  function answerRtc(client, base, sdp){
+    if (!window.RTCPeerConnection) return;
+    if (hubRtc) hubRtc.close();
+    var pc = new RTCPeerConnection(rtcConfig());
+    var l = hubRtc = rtcLink(pc);
+    trackIce(l);
+    lastDirectConn = l;  // [hub] log shows its ICE story while on the relay
+    pc.ondatachannel = function(e){
+      var dc = l.dc = e.channel;
+      dc.onopen = function(){
+        if (hubRtc !== l){ l.close(); return; }
+        l.open = true;
+        l.lastRxAt = performance.now();
+        phoneConn = l;  // relayPhone stays open underneath for snapshots / fallback
+        setLinkStatus(hubStatus, 'Phone connected · P2P', 'ok');
+        if (currentMode !== 2) selectMode(2);
+        sendHubState();
+        offerCamToPhone();
+      };
+      dc.onmessage = function(ev){
+        var msg;
+        try { msg = JSON.parse(ev.data); } catch (err) { return; }
+        l.lastRxAt = performance.now();
+        if (l.open && phoneConn !== l && phoneConn === relayPhone) phoneConn = l;  // P2P recovered from a stall
+        onPhoneData(msg);
+      };
+      dc.onclose = function(){
+        l.open = false;
+        if (phoneConn === l){
+          phoneConn = relayPhone && relayPhone.open ? relayPhone : null;
+          offerCamToPhone();  // back to relay snapshots
+        }
+      };
+    };
+    pc.setRemoteDescription({ type: 'offer', sdp: sdp })
+      .then(function(){
+        // the phone's offer carries a recvonly video slot: answer it sendonly
+        // so the webcam can be dropped in (and out) later with replaceTrack,
+        // no renegotiation -- real WebRTC video over the same TURN path
+        pc.getTransceivers().forEach(function(tr){
+          if (tr.receiver && tr.receiver.track && tr.receiver.track.kind === 'video' && !l.videoSender){
+            tr.direction = 'sendonly';
+            l.videoSender = tr.sender;
+          }
+        });
+        return pc.createAnswer();
+      })
+      .then(function(a){ return pc.setLocalDescription(a); })
+      .then(function(){ return gatherAll(pc); })
+      .then(function(){
+        if (hubRtc === l) client.publish(base + '/down', JSON.stringify({ t: 'rtcAnswer', sdp: pc.localDescription.sdp }));
+      }).catch(function(){});
+  }
+
+  // relayed phones have no "close" event -- time them out instead
+  setInterval(function(){
+    if (relayPhone && relayPhone.open && performance.now() - relayPhoneSeenAt > 5000){
+      relayPhone.close();
+      if (phoneConn === relayPhone){
+        phoneConn = null;
+        setLinkStatus(hubStatus, 'Phone disconnected · waiting…', 'bad');
+      }
+    }
+  }, 1000);
+
+  function sendHubState(){
+    if (phoneConn && phoneConn.open) phoneConn.send({ t: 'hub', esp: linkReady() ? 1 : 0, meet: meetUrl || '', mirror: camMirror ? 1 : 0 });
+  }
+  setInterval(sendHubState, 1000);
+
+  // Hub side: phone sample -> graph/bubble here + forward r/p to the ESP32.
+  // Phone link health, logged to the console every 2s next to the ESP32's
+  // [tilt] line: sent = samples the phone sent (from its seq), rx = arrived
+  // here, lost = never arrived, late = arrived after a newer one (dropped),
+  // maxGap = longest silence between arrivals.
+  var seqOwner = null, lastSeq = 0, seqFirst = 0, lastDirectConn = null;
+  var linkRx = 0, linkLost = 0, linkLate = 0, linkMaxGap = 0, linkLastAt = 0;
+  function onPhoneData(msg){
+    if (!msg || msg.t !== 'tilt') return;
+    var now = performance.now();
+    if (typeof msg.s === 'number'){
+      // new phone connection, or the phone rejoined and restarted its count
+      if (seqOwner !== phoneConn || msg.s < lastSeq - 50){ seqOwner = phoneConn; lastSeq = msg.s - 1; seqFirst = lastSeq; }
+      if (msg.s <= lastSeq){ linkLate++; linkLost = Math.max(0, linkLost - 1); return; }
+      linkLost += msg.s - lastSeq - 1;
+      lastSeq = msg.s;
+    }
+    linkRx++;
+    if (linkLastAt && now - linkLastAt > linkMaxGap) linkMaxGap = now - linkLastAt;
+    linkLastAt = now;
+    phoneMsgs++;
+    sensorActive = true;
+    lastOrientationAt = performance.now();
+    curX = msg.x; curY = msg.y; curZ = msg.z;
+    if (msg.a){ curA = msg.a; motionActive = true; lastMotionAt = lastOrientationAt; }
+    if (typeof msg.hz === 'number') noteJolt(msg.hz);
+    sendTilt(msg.r, msg.p, true);
+  }
+  setInterval(function(){
+    if (!phoneConn || !phoneConn.open || !linkRx && !linkLate) return;
+    var sent = lastSeq - seqFirst;
+    var line = '[hub] sent=' + (seqOwner ? sent : '?') + ' rx=' + linkRx + ' lost=' + linkLost +
+      ' late=' + linkLate + ' maxGap=' + Math.round(linkMaxGap) + 'ms via ' + phoneVia() +
+      ' turn=' + (turnCfg ? 'on' : 'off');
+    // on the relay: say why the phone's direct attempt (if any) didn't connect
+    if (phoneConn.kind === 'relay' && lastDirectConn) iceSummary(lastDirectConn, function(s){ console.log(line + ' | direct: ' + s); });
+    else console.log(line + (phoneConn.kind === 'relay' ? ' | direct: never attempted' : ''));
+    seqFirst = lastSeq;
+    linkRx = linkLost = linkLate = 0;
+    linkMaxGap = 0;
+  }, 2000);
+  // Which path the phone's WebRTC link actually took: DIRECT (peer to peer)
+  // or TURN (through Cloudflare), plus its round trip -- for the status line
+  // and the [hub] log.
+  var phoneRoute = '';
+  function updatePhoneRoute(){
+    var pc = phoneConn && (phoneConn.kind === 'direct' || phoneConn.kind === 'rtc') && phoneConn.peerConnection;
+    if (!pc || !pc.getStats){ phoneRoute = ''; return; }
+    pc.getStats().then(function(stats){
+      var selId = null, pairs = {}, cands = {};
+      stats.forEach(function(s){
+        if (s.type === 'transport' && s.selectedCandidatePairId) selId = s.selectedCandidatePairId;
+        if (s.type === 'candidate-pair') pairs[s.id] = s;
+        if (s.type === 'local-candidate' || s.type === 'remote-candidate') cands[s.id] = s;
+      });
+      var pair = selId && pairs[selId];
+      if (!pair) return;
+      var l = cands[pair.localCandidateId], r = cands[pair.remoteCandidateId];
+      var turn = (l && l.candidateType === 'relay') || (r && r.candidateType === 'relay');
+      var rtt = pair.currentRoundTripTime ? Math.round(pair.currentRoundTripTime * 1000) : 0;
+      phoneRoute = (turn ? 'TURN' : 'DIRECT') + (rtt ? ' ~' + rtt + 'ms' : '');
+    }).catch(function(){});
+  }
+  function phoneVia(){
+    return phoneConn.kind === 'relay' ? 'RELAY' : (phoneRoute || 'DIRECT');
+  }
+
+  setInterval(function(){
+    phoneRate = phoneMsgs; phoneMsgs = 0;
+    updatePhoneRoute();
+    if (phoneConn && phoneConn.open){
+      var via = ' · ' + phoneVia();
+      setLinkStatus(hubStatus, phoneRate ? 'Phone streaming · ' + phoneRate + ' Hz → ESP32' + via :
+        'Phone connected' + via + ' · tap Start sensor on the phone', 'ok');
+    }
+  }, 1000);
+
+  // Controller side: join the laptop's room -- direct WebRTC first, relay if
+  // that can't connect (different networks behind strict NAT/firewalls).
+  var ctrlRelay = null, joinAttempt = 0, lastHubMsgAt = 0;
+  // the direct attempt behind a relay fallback, and why it didn't connect
+  var ctrlDirectConn = null, ctrlIceInfo = '';
+  setInterval(function(){
+    if (ctrlConn && ctrlConn.kind === 'relay' && ctrlDirectConn) iceSummary(ctrlDirectConn, function(s){ ctrlIceInfo = s; });
+  }, 2000);
+  var ctrlDirectAttempt = 0;  // join attempt whose direct link won -- relay stands down
+
+  function onHubMsg(msg, code, via){
+    if (!msg) return;
+    if (msg.t === 'pins'){ onTiltPins(msg.h); return; }
+    if (msg.t !== 'hub') return;
+    lastHubMsgAt = performance.now();
+    hubEspLinked = !!msg.esp;
+    showMeetLink(msg.meet || '');
+    if (msg.mirror !== undefined && !!msg.mirror !== camMirror){ camMirror = !!msg.mirror; applyMirror(); }
+    setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
+      (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link') +
+      (via === 'RELAY' ? ' · TURN ' + (turnCfg ? phoneTurnFrom : 'off') + (ctrlIceInfo ? ' · direct: ' + ctrlIceInfo : '') : ''),
+      hubEspLinked ? 'ok' : 'bad');
+    renderStatus();
+  }
+
+  function joinedAs(link){
+    ctrlConn = link;
+    joinBtn.disabled = false;
+    joinBtn.textContent = 'Rejoin';
+    renderStatus();
+  }
+
+  function joinHub(rawCode){
+    var code = (rawCode || '').trim().toUpperCase();
+    if (!code){ setLinkStatus(ctrlStatus, 'Enter the code shown on the laptop', 'bad'); return; }
+    var attempt = ++joinAttempt;
+    if (ctrlPeer){ try { ctrlPeer.destroy(); } catch (e) {} ctrlPeer = null; }
+    if (ctrlRelay){ try { ctrlRelay.end(true); } catch (e) {} ctrlRelay = null; }
+    ctrlConn = null;
+    joinBtn.disabled = true;
+    setLinkStatus(ctrlStatus, 'Connecting…');
+    var relayStarted = false;
+    function fallBack(){
+      if (relayStarted || attempt !== joinAttempt || (ctrlConn && ctrlConn.open)) return;
+      relayStarted = true;
+      startCtrlRelay(code, attempt);
+    }
+    var directTimer = setTimeout(fallBack, DIRECT_TIMEOUT_MS);
+    loadScript(PEERJS_URL).then(function(){
+      var peer = new Peer(PEER_PREFIX + 'c' + Math.random().toString(36).slice(2, 8), peerOpts());
+      ctrlPeer = peer;
+      // the hub calls us with its webcam once linked -- receive only
+      peer.on('call', function(call){
+        call.answer();
+        call.on('stream', function(stream){ showCamVideo(stream); tuneLowLatency(call); });
+        call.on('close', hideCam);
+      });
+      peer.on('open', function(){
+        // Unordered channel (PeerJS: reliable false -> ordered: false). With an
+        // ordered one, a single lost packet on Wi-Fi held back every later tilt
+        // sample until its retransmit (~0.3-0.5s freezes); now later samples
+        // pass straight through and the hub discards stale ones by seq.
+        var conn = peer.connect(PEER_PREFIX + code, { reliable: false });
+        conn.kind = 'direct';
+        ctrlDirectConn = conn;
+        ctrlIceInfo = '';
+        trackIce(conn);
+        conn.on('open', function(){
+          if (attempt !== joinAttempt) { try { conn.close(); } catch (e) {} return; }
+          clearTimeout(directTimer);
+          // A direct link that shows up late still beats the relay (faster,
+          // real video): take it over and shut the relay down.
+          ctrlDirectAttempt = attempt;
+          if (ctrlConn && ctrlConn.kind === 'relay') ctrlConn.open = false;
+          if (ctrlRelay){ try { ctrlRelay.end(true); } catch (e) {} ctrlRelay = null; }
+          joinedAs(conn);
+          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · DIRECT · tap Start sensor', 'ok');
+        });
+        conn.on('data', function(msg){ onHubMsg(msg, code, 'DIRECT'); });
+        conn.on('close', function(){
+          if (ctrlConn !== conn) return;
+          ctrlConn = null;
+          joinBtn.disabled = false;
+          setLinkStatus(ctrlStatus, 'Disconnected from laptop · rejoin', 'bad');
+          renderStatus();
+        });
+      });
+      peer.on('error', function(err){
+        if (attempt !== joinAttempt) return;
+        if (err && err.type === 'peer-unavailable'){
+          // signaling reached PeerJS fine and no room has this code
+          clearTimeout(directTimer);
+          joinBtn.disabled = false;
+          setLinkStatus(ctrlStatus, 'No laptop with code ' + code + ' · check the code', 'bad');
+          return;
+        }
+        fallBack();  // network-level trouble: go straight to the relay
+      });
+    }).catch(fallBack);
+  }
+
+  function startCtrlRelay(code, attempt){
+    setLinkStatus(ctrlStatus, 'Direct link blocked on this network · trying relay…');
+    connectRelay(function(client){
+      if (attempt !== joinAttempt || ctrlDirectAttempt === attempt){ client.end(true); return; }
+      ctrlRelay = client;
+      var base = RELAY_TOPIC + code;
+      var link = relayLink(client, base + '/up', 40);  // tilt at up to ~25Hz
+      var gotHub = false, rtc = null, rtcTries = 0;
+      // P2P upgrade (see rtcLink): offer once the hub has answered on the relay;
+      // a couple of retries if it doesn't open (stays on the relay meanwhile)
+      function startRtc(){
+        if (!window.RTCPeerConnection || attempt !== joinAttempt || ctrlDirectAttempt === attempt) return;
+        if (rtc) rtc.close();
+        if (++rtcTries <= 3) setTimeout(function(){
+          if (rtc && !rtc.open && ctrlConn === link) startRtc();
+        }, 12000);
+        var pc = new RTCPeerConnection(rtcConfig());
+        var l = rtc = rtcLink(pc);
+        trackIce(l);
+        ctrlDirectConn = l;  // status line shows its ICE story while on the relay
+        var dc = l.dc = pc.createDataChannel('pd', { ordered: false, maxRetransmits: 0 });
+        // receive-only video slot: the hub drops its webcam in with replaceTrack.
+        // The remote track stays muted until frames actually flow, so LIVE VIEW
+        // follows unmute/mute (webcam on/off on the laptop).
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.ontrack = function(e){
+          var track = e.track, stream = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([track]);
+          function show(){ if (rtc === l){ showCamVideo(stream); tuneLowLatency(l); } }
+          track.onunmute = show;
+          track.onmute = function(){ if (camVideo.srcObject === stream) hideCam(); };
+          if (!track.muted) show();
+        };
+        dc.onopen = function(){
+          if (attempt !== joinAttempt || rtc !== l){ l.close(); return; }
+          l.open = true;
+          ctrlConn = l;
+          renderStatus();
+          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · P2P · tap Start sensor', 'ok');
+        };
+        dc.onmessage = function(e){
+          var msg;
+          try { msg = JSON.parse(e.data); } catch (err) { return; }
+          onHubMsg(msg, code, 'P2P');
+        };
+        dc.onclose = function(){
+          l.open = false;
+          var s = camVideo.srcObject;
+          if (s && l.peerConnection.getReceivers().some(function(r){ return r.track && s.getTracks().indexOf(r.track) >= 0; })) hideCam();
+          if (ctrlConn === l && link.open){ ctrlConn = link; renderStatus(); }  // back onto the relay
+        };
+        pc.createOffer().then(function(o){ return pc.setLocalDescription(o); })
+          .then(function(){ return gatherAll(pc); })
+          .then(function(){
+            if (rtc === l) client.publish(base + '/up', JSON.stringify({ t: 'rtcOffer', sdp: pc.localDescription.sdp }));
+          }).catch(function(){});
+      }
+      client.subscribe(base + '/down');
+      client.subscribe(base + '/cam');
+      client.on('message', function(topic, payload){
+        if (topic === base + '/cam'){
+          var id = showCamSnapshot(payload.toString());
+          if (id !== null) client.publish(base + '/up', JSON.stringify({ t: 'camAck', id: id }), { qos: 0 });
+          return;
+        }
+        if (ctrlDirectAttempt === attempt) return;  // direct link took over
+        var msg;
+        try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+        if (msg.t === 'turn'){
+          if (Array.isArray(msg.ice) && msg.ice.length){ turnCfg = { iceServers: msg.ice }; phoneTurnFrom = 'hub'; }
+          return;
+        }
+        if (msg.t === 'rtcAnswer'){
+          if (rtc && rtc.peerConnection.signalingState === 'have-local-offer')
+            rtc.peerConnection.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(function(){});
+          return;
+        }
+        if (!gotHub){ gotHub = true; joinedAs(link); startRtc(); }
+        if (ctrlConn && ctrlConn.kind === 'rtc' && ctrlConn.open) return;  // P2P carries hub traffic now
+        onHubMsg(msg, code, 'RELAY');
+      });
+      // say hello until the hub answers, then keep-alive so it doesn't time us out
+      (function hello(){
+        if (attempt !== joinAttempt || !link.open) return;
+        client.publish(base + '/up', JSON.stringify({ t: 'hello' }));
+        setTimeout(hello, gotHub ? 2000 : 1000);
+      })();
+      setTimeout(function(){
+        if (!gotHub && attempt === joinAttempt && ctrlDirectAttempt !== attempt){
+          joinBtn.disabled = false;
+          setLinkStatus(ctrlStatus, 'No laptop answered on code ' + code + ' · check the code / laptop page', 'bad');
+        }
+      }, 10000);
+    }, function(){
+      if (attempt !== joinAttempt || ctrlDirectAttempt === attempt) return;
+      joinBtn.disabled = false;
+      setLinkStatus(ctrlStatus, 'Could not reach the laptop · direct and relay both failed', 'bad');
+    });
+  }
+
+  // relay has no close event: if the hub goes quiet, say so
+  setInterval(function(){
+    if (ctrlConn && ctrlConn.kind === 'relay' && performance.now() - lastHubMsgAt > 5000){
+      setLinkStatus(ctrlStatus, 'Laptop not responding (relay) · rejoin', 'bad');
+    }
+  }, 1000);
+  joinBtn.addEventListener('click', function(){ joinHub(joinCodeEl.value); });
+  joinCodeEl.addEventListener('keydown', function(e){ if (e.key === 'Enter') joinHub(joinCodeEl.value); });
+
+  /* ---------- webcam: hub laptop -> remote controller phone ---------- */
+  // DIRECT link: a real WebRTC video call (PeerJS media), smooth.
+  // RELAY link: WebRTC can't get through either, so small JPEG snapshots go
+  // over the MQTT relay instead (~3 fps) -- enough to see the pins move.
+  var camHub = document.getElementById('camHub');
+  var camHubFrame = document.getElementById('camHubFrame');
+  var camHubStatus = document.getElementById('camHubStatus');
+  var camPreview = document.getElementById('camPreview');
+  var camBtn = document.getElementById('camBtn');
+  var camView = document.getElementById('camView');
+  var camVia = document.getElementById('camVia');
+  var camVideo = document.getElementById('camVideo');
+  var camImg = document.getElementById('camImg');
+  var camStream = null, camCall = null, camCalledConn = null, camSnapTimer = null;
+  var camCanvas = document.createElement('canvas');
+  // Snapshots are flow-controlled: the phone acks each frame and the hub only
+  // sends the next one after the ack (or a timeout), so frames never queue up
+  // on a slow link -- latency stays at one network round trip instead of
+  // growing. Frame rate adapts to the link, capped at ~8 fps.
+  var SNAP_W = 320, SNAP_H = 240, SNAP_QUALITY = 0.5;
+  // Up to SNAP_WINDOW frames may be in flight (so throughput isn't capped at
+  // 1/RTT) -- still a hard bound on queued frames, so latency can't creep up.
+  // The public broker occasionally drops a QoS-0 message; the ack timeout
+  // tracks the measured round trip so a lost frame costs ~2.5 RTT, not 1.5s.
+  var SNAP_MIN_MS = 110, SNAP_WINDOW = 4;
+  var snapId = 0, snapPending = {}, snapLastSentAt = 0, snapRtt = 0, snapCount = 0, snapFps = 0;
+  function snapAckTimeout(){ return snapRtt ? Math.max(600, snapRtt * 2.5) : 1500; }
+
+  function renderCamHub(){
+    var on = !!camStream;
+    camHubFrame.hidden = !on;
+    camBtn.textContent = on ? 'Stop webcam' : 'Share webcam with phone';
+    camBtn.classList.toggle('primary', !on);
+    document.getElementById('tiltServoCol').classList.toggle('has-cam', on);
+    var phone = phoneConn && phoneConn.open;
+    camHubStatus.textContent = !on ? 'OFF' : !phone ? 'ON · NO PHONE' :
+      phoneConn.kind === 'relay' ? 'ON · SNAPSHOTS ' + snapFps + ' FPS · ~' + Math.round(snapRtt / 2) + ' MS DELAY' : 'ON · LIVE VIDEO';
+  }
+
+  function startCam(){
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      camHubStatus.textContent = 'NO CAMERA API (needs HTTPS)';
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } }, audio: false })
+      .then(function(stream){
+        // favour frame rate / low latency over sharpness (it's moving pins)
+        stream.getVideoTracks().forEach(function(t){ try { t.contentHint = 'motion'; } catch (e) {} });
+        camStream = stream;
+        camPreview.srcObject = stream;
+        camPreview.play().catch(function(){});
+        renderCamHub();
+        offerCamToPhone();
+      })
+      .catch(function(err){ camHubStatus.textContent = 'CAMERA BLOCKED (' + (err && err.name || 'error') + ')'; });
+  }
+
+  function stopCam(){
+    if (camStream) camStream.getTracks().forEach(function(t){ t.stop(); });
+    camStream = null;
+    camPreview.srcObject = null;
+    if (camCall){ try { camCall.close(); } catch (e) {} camCall = null; camCalledConn = null; }
+    if (hubRtc) setRtcCam(hubRtc);  // empty the P2P video slot (phone hides LIVE VIEW)
+    clearInterval(camSnapTimer); camSnapTimer = null;
+    renderCamHub();
+  }
+  camBtn.addEventListener('click', function(){ if (camStream) stopCam(); else startCam(); });
+
+  // Webcam into (or out of) a P2P link's video slot. Low-latency encoding:
+  // capped bitrate so a weak LTE downlink doesn't queue frames, and keep the
+  // frame rate over resolution when bandwidth drops (it's moving pins).
+  function setRtcCam(l){
+    if (!l || !l.videoSender) return false;
+    var track = camStream ? camStream.getVideoTracks()[0] : null;
+    l.videoSender.replaceTrack(track || null).catch(function(){});
+    try {
+      var p = l.videoSender.getParameters();
+      if (p.encodings && p.encodings.length){
+        p.encodings[0].maxBitrate = 1200000;
+        p.encodings[0].maxFramerate = 30;
+        p.degradationPreference = 'maintain-framerate';
+        l.videoSender.setParameters(p).catch(function(){});
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  // Send the webcam to whichever phone is connected now, by its path.
+  function offerCamToPhone(){
+    renderCamHub();
+    if (!camStream || !phoneConn || !phoneConn.open) return;
+    if (phoneConn.kind === 'rtc' && setRtcCam(phoneConn)){
+      clearInterval(camSnapTimer); camSnapTimer = null;  // real video replaces snapshots
+      return;
+    }
+    // P2P (rtc) links have no PeerJS media call: snapshots go over the relay
+    if (phoneConn.kind === 'relay' || phoneConn.kind === 'rtc'){
+      if (!camSnapTimer) camSnapTimer = setInterval(sendSnapshot, 40);
+      return;
+    }
+    clearInterval(camSnapTimer); camSnapTimer = null;
+    if (camCalledConn === phoneConn) return;  // already calling this phone
+    if (camCall){ try { camCall.close(); } catch (e) {} }
+    if (hubPeer && hubPeer.call && phoneConn.peer){
+      camCall = hubPeer.call(phoneConn.peer, camStream);
+      camCalledConn = phoneConn;
+    }
+  }
+
+  function sendSnapshot(){
+    if (!camStream || !relayPhone || !relayPhone.open || (phoneConn !== relayPhone && !(phoneConn && phoneConn.kind === 'rtc'))) return;
+    if (!camPreview.videoWidth) return;
+    var now = performance.now(), timeout = snapAckTimeout(), inFlight = 0;
+    for (var k in snapPending){ if (now - snapPending[k] > timeout) delete snapPending[k]; else inFlight++; }  // lost -> forget
+    if (inFlight >= SNAP_WINDOW) return;                // wait for the phone's acks
+    if (now - snapLastSentAt < SNAP_MIN_MS) return;
+    camCanvas.width = SNAP_W; camCanvas.height = SNAP_H;
+    camCanvas.getContext('2d').drawImage(camPreview, 0, 0, SNAP_W, SNAP_H);
+    snapId = (snapId + 1) % 100000;
+    snapPending[snapId] = now; snapLastSentAt = now;
+    // "id|rtt|dataURL": the phone acks the id and shows the last round trip
+    relayPhone.client.publish(RELAY_TOPIC + hubCode + '/cam',
+      snapId + '|' + Math.round(snapRtt / 2) + '|' + camCanvas.toDataURL('image/jpeg', SNAP_QUALITY), { qos: 0 });  // one-way estimate
+  }
+  function onSnapAck(id){
+    if (!(id in snapPending)) return;
+    var rtt = performance.now() - snapPending[id];
+    delete snapPending[id];
+    snapRtt = snapRtt ? snapRtt * 0.7 + rtt * 0.3 : rtt;
+    snapCount++;
+  }
+  setInterval(function(){ snapFps = snapCount; snapCount = 0; }, 1000);
+  setInterval(renderCamHub, 1000);  // keep the status line in step with the phone link
+
+  // Controller side
+  function showCamVideo(stream){
+    camVideo.srcObject = stream;
+    camVideo.hidden = false; camImg.hidden = true;
+    camVideo.play().catch(function(){});
+    camVia.textContent = 'LIVE VIDEO';
+    camView.hidden = false;
+  }
+  // Mirror (left-right flip). Set on the hub, passed to the phone in the hub
+  // state, applied as a CSS flip to every live-view frame -- works the same for
+  // the live video and the relay snapshots. Default on.
+  var mirrorBtn = document.getElementById('mirrorBtn');
+  var camMirror = true;
+  try { var savedMirror = localStorage.getItem('pdCamMirror'); if (savedMirror !== null) camMirror = savedMirror === '1'; } catch (e) {}
+  function applyMirror(){
+    camHubFrame.classList.toggle('mirrored', camMirror);
+    camVideo.parentNode.classList.toggle('mirrored', camMirror);
+    mirrorBtn.textContent = 'Mirror: ' + (camMirror ? 'ON' : 'OFF');
+  }
+  mirrorBtn.addEventListener('click', function(){
+    camMirror = !camMirror;
+    try { localStorage.setItem('pdCamMirror', camMirror ? '1' : '0'); } catch (e) {}
+    applyMirror();
+    sendHubState();
+  });
+  applyMirror();
+
+  /* ---------- Google Meet link: hub shares, phone opens ---------- */
+  // Meet can't be embedded (it refuses iframes), so the hub just passes the
+  // link along in its regular {"t":"hub"} state message and the phone shows
+  // an "Open Google Meet" button. Only plain https links are accepted on both
+  // ends -- the relay is a public broker, so never trust what arrives.
+  var meetInput = document.getElementById('meetInput');
+  var meetBtn = document.getElementById('meetBtn');
+  var meetStatus = document.getElementById('meetStatus');
+  var meetView = document.getElementById('meetView');
+  var meetOpen = document.getElementById('meetOpen');
+  var meetUrl = '';
+
+  function safeHttpsUrl(s){
+    try {
+      var u = new URL(String(s || '').trim());
+      return u.protocol === 'https:' ? u.href : '';
+    } catch (e) { return ''; }
+  }
+
+  function setMeetUrl(s){
+    meetUrl = safeHttpsUrl(s);
+    try { localStorage.setItem('pdMeetUrl', meetUrl); } catch (e) {}
+    meetInput.value = meetUrl;
+    meetBtn.textContent = meetUrl ? 'Stop sharing' : 'Share link';
+    meetStatus.textContent = meetUrl
+      ? (/^https:\/\/meet\.google\.com\//.test(meetUrl) ? 'Google Meet link shared with the phone.' : 'Link shared with the phone.')
+      : 'Or start a Google Meet with this webcam and share its link.';
+    meetStatus.classList.toggle('ok', !!meetUrl);
+    sendHubState();
+  }
+  meetBtn.addEventListener('click', function(){
+    if (meetUrl){ setMeetUrl(''); return; }
+    var v = safeHttpsUrl(meetInput.value);
+    if (!v){ meetStatus.textContent = 'Paste an https:// link (e.g. https://meet.google.com/abc-defg-hij)'; meetStatus.classList.add('bad'); return; }
+    meetStatus.classList.remove('bad');
+    setMeetUrl(v);
+  });
+  meetInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') meetBtn.click(); });
+  try { var savedMeet = localStorage.getItem('pdMeetUrl'); if (savedMeet) { meetUrl = safeHttpsUrl(savedMeet); meetInput.value = meetUrl; if (meetUrl) meetBtn.textContent = 'Stop sharing'; } } catch (e) {}
+
+  // Phone side
+  function showMeetLink(s){
+    var u = safeHttpsUrl(s);
+    meetView.hidden = !u;
+    if (u && meetOpen.getAttribute('href') !== u) meetOpen.setAttribute('href', u);
+  }
+
+  // Direct video: ask the receiver for the smallest jitter buffer it allows
+  // (Chrome/Edge honour these; Safari ignores them), and report whether the
+  // call ended up on a TURN relay server -- that, not the code, is the usual
+  // reason "direct" video still lags.
+  var camRouteTimer = null;
+  function tuneLowLatency(call){
+    var pc = call && call.peerConnection;
+    if (!pc) return;
+    pc.getReceivers().forEach(function(r){
+      try { r.playoutDelayHint = 0; } catch (e) {}
+      try { r.jitterBufferTarget = 0; } catch (e) {}
+    });
+    clearInterval(camRouteTimer);
+    camRouteTimer = setInterval(function(){
+      if (pc.connectionState === 'closed'){ clearInterval(camRouteTimer); return; }
+      pc.getStats().then(function(stats){
+        var pair = null, remote = {};
+        stats.forEach(function(s){
+          if (s.type === 'candidate-pair' && (s.selected || s.nominated) && s.state === 'succeeded') pair = s;
+          if (s.type === 'remote-candidate') remote[s.id] = s;
+        });
+        if (!pair) return;
+        var rc = remote[pair.remoteCandidateId];
+        var viaTurn = rc && rc.candidateType === 'relay';
+        var rtt = pair.currentRoundTripTime ? Math.round(pair.currentRoundTripTime * 1000) : 0;
+        camVia.textContent = 'LIVE VIDEO' + (viaTurn ? ' · TURN' : '') + (rtt ? ' · ~' + rtt + 'ms' : '');
+      }).catch(function(){});
+    }, 2000);
+  }
+
+  var lastSnapAt = 0;
+  // payload "id|rtt|data:image/jpeg..." -> shows it, returns the id to ack
+  function showCamSnapshot(payload){
+    var a = payload.indexOf('|'), b = payload.indexOf('|', a + 1);
+    if (a < 0 || b < 0) return null;
+    var id = parseInt(payload.slice(0, a), 10), rtt = parseInt(payload.slice(a + 1, b), 10);
+    var dataUrl = payload.slice(b + 1);
+    if (dataUrl.indexOf('data:image/') !== 0) return null;
+    camImg.src = dataUrl;
+    camImg.hidden = false;
+    if (!camVideo.srcObject) camVideo.hidden = true;
+    lastSnapAt = performance.now();
+    camVia.textContent = 'SNAPSHOTS · RELAY' + (rtt ? ' · ~' + rtt + 'ms' : '');
+    camView.hidden = false;
+    return id;
+  }
+  function hideCam(){
+    camVideo.srcObject = null;
+    camVideo.hidden = true;
+    if (performance.now() - lastSnapAt > 3000) camView.hidden = true;
+  }
+  // snapshots just stop when the hub turns the webcam off
+  setInterval(function(){
+    if (!camImg.hidden && !camVideo.srcObject && performance.now() - lastSnapAt > 3000) camView.hidden = true;
+  }, 1000);
+
+  // Opened from the hub's QR (?join=CODE): go straight to tilt as controller.
+  if (joinParam){
+    joinCodeEl.value = joinParam;
+    showView(2);
+    joinHub(joinParam);
+  }
+
+})();
+</script>
+</body>
+</html>
