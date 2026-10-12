@@ -1679,9 +1679,8 @@
   // from scripts/turn_creds.ps1). Phone on LTE (carrier CGNAT) <-> laptop on
   // Wi-Fi can't punch a direct path, and PeerJS's own TURN is EU/US UDP-only
   // -- Cloudflare's anycast TURN (Seoul PoP) keeps that link fast. Never in
-  // this public page's source: pasted once on the laptop (localStorage) and
-  // handed to the phone in the join link's #fragment, which browsers never
-  // send to a server.
+  // this public page's source: pasted on the laptop (kept in localStorage);
+  // only the hub needs them.
   var TURN_STORE = 'pdTurn';
   function readTurn(){
     try {
@@ -1693,14 +1692,6 @@
   function saveTurn(t){
     try { if (t) localStorage.setItem(TURN_STORE, JSON.stringify(t)); else localStorage.removeItem(TURN_STORE); } catch (e) {}
   }
-  function encodeTurn(t){ return btoa(JSON.stringify(t)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
-  function decodeTurn(s){ return JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/'))); }
-  (function(){  // phone: take credentials from #turn=... and tidy the URL
-    var m = location.hash.match(/turn=([A-Za-z0-9_-]+)/);
-    if (!m) return;
-    try { var t = decodeTurn(m[1]); if (t && t.iceServers) saveTurn(t); } catch (e) {}
-    history.replaceState(null, '', location.pathname + location.search);
-  })();
   var turnCfg = readTurn();
 
   // Why a direct (WebRTC) attempt didn't make it, for the status line / log:
@@ -1838,9 +1829,10 @@
     return s;
   }
 
-  function joinUrl(code){
-    return location.origin + location.pathname + '?join=' + code + (turnCfg ? '#turn=' + encodeTurn(turnCfg) : '');
-  }
+  // Short on purpose: carrying the TURN credentials too made the QR too
+  // dense to scan. The hub's own TURN allocation is enough -- the phone (even
+  // behind LTE CGNAT) reaches the hub's relay address from its side.
+  function joinUrl(code){ return location.origin + location.pathname + '?join=' + code; }
 
   // Hub: paste / clear TURN credentials. Reload so the room reopens (same
   // code) with the new ICE servers and the QR carries them.
@@ -1908,7 +1900,9 @@
       hubQr.innerHTML = '';
       if (hosted){
         loadScript(QR_URL).then(function(){
-          new QRCode(hubQr, { text: url, width: 200, height: 200, colorDark: '#202020', colorLight: '#ffffff' });
+          // low error correction = fewest modules = easiest scan off a screen
+          new QRCode(hubQr, { text: url, width: 200, height: 200, colorDark: '#202020', colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.L });
         }).catch(function(){ hubQr.textContent = 'QR unavailable'; });
       } else {
         hubQr.textContent = 'NO HTTPS';
@@ -2106,7 +2100,7 @@
     showVdo(msg.vdo || '');
     setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
       (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link') +
-      (via === 'RELAY' ? ' · TURN ' + (turnCfg ? 'on' : 'off') + (ctrlIceInfo ? ' · direct: ' + ctrlIceInfo : '') : ''),
+      (via === 'RELAY' && ctrlIceInfo ? ' · direct: ' + ctrlIceInfo : ''),
       hubEspLinked ? 'ok' : 'bad');
     renderStatus();
   }
