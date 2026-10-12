@@ -1720,7 +1720,9 @@
     if (!srv || !/^([0-9a-f]{2})+$/i.test(srv.username) || !/^([0-9a-f]{2})+$/i.test(srv.credential)) return null;
     return hexToB64u(srv.username) + '.' + hexToB64u(srv.credential);
   }
-  // Phone: TURN from the join link (in memory only -- every join brings fresh ones).
+  // Phone: TURN from the join link (in memory only -- every join brings fresh
+  // ones); the hub also sends it over the relay ('turn' message).
+  var phoneTurnFrom = 'qr';
   (function(){
     var t = new URLSearchParams(location.search).get('t');
     var m = t && /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(t);
@@ -2099,6 +2101,10 @@
             if (phoneConn && phoneConn !== relayPhone && phoneConn.kind !== 'direct' && phoneConn.kind !== 'rtc') { try { phoneConn.close(); } catch (e) {} }
             relayPhone = relayLink(client, base + '/down', 200);  // pins to phone at ~5Hz
             phoneConn = relayPhone;
+            // The phone needs TURN too for the P2P upgrade (CGNAT), and the QR
+            // token doesn't always make it -- hand it over here, before the
+            // first hub state, which is what makes the phone send its offer.
+            if (turnCfg) relayPhone.send({ t: 'turn', ice: turnCfg.iceServers });
             setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
             if (currentMode !== 2) selectMode(2);
             sendHubState();
@@ -2267,7 +2273,7 @@
     showVdo(msg.vdo || '');
     setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
       (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link') +
-      (via === 'RELAY' && ctrlIceInfo ? ' · direct: ' + ctrlIceInfo : ''),
+      (via === 'RELAY' ? ' · TURN ' + (turnCfg ? phoneTurnFrom : 'off') + (ctrlIceInfo ? ' · direct: ' + ctrlIceInfo : '') : ''),
       hubEspLinked ? 'ok' : 'bad');
     renderStatus();
   }
@@ -2402,6 +2408,10 @@
         if (ctrlDirectAttempt === attempt) return;  // direct link took over
         var msg;
         try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+        if (msg.t === 'turn'){
+          if (Array.isArray(msg.ice) && msg.ice.length){ turnCfg = { iceServers: msg.ice }; phoneTurnFrom = 'hub'; }
+          return;
+        }
         if (msg.t === 'rtcAnswer'){
           if (rtc && rtc.peerConnection.signalingState === 'have-local-offer')
             rtc.peerConnection.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(function(){});
