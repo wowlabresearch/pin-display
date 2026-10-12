@@ -179,9 +179,12 @@
   .legend-note-mark{width:14px;height:8px;border:1.5px solid var(--ink);}
   /* phone link (hub / controller) */
   .link-hub{display:flex;align-items:center;gap:16px;padding:14px;border:1px solid var(--line);background:#f7f8f4;}
-  .hub-qr{width:112px;height:112px;flex:0 0 112px;display:grid;place-items:center;background:#fff;
+  .hub-qr{width:152px;height:152px;flex:0 0 152px;display:grid;place-items:center;background:#fff;cursor:zoom-in;
     border:1px solid var(--line);color:var(--muted);font:9px var(--mono);}
-  .hub-qr img,.hub-qr canvas{display:block;width:100px !important;height:100px !important;}
+  .hub-qr img,.hub-qr canvas{display:block;width:140px !important;height:140px !important;}
+  /* tap the QR to show it full-screen -- easiest to scan off a laptop */
+  .hub-qr.zoom{position:fixed;inset:0;z-index:1000;width:auto;height:auto;border:0;cursor:zoom-out;}
+  .hub-qr.zoom img,.hub-qr.zoom canvas{width:min(80vmin,480px) !important;height:min(80vmin,480px) !important;}
   .hub-info{display:flex;flex-direction:column;gap:6px;min-width:0;}
   .hub-code-label{color:var(--muted);font:9px var(--mono);letter-spacing:.06em;}
   .hub-code{font:500 34px/1 var(--mono);letter-spacing:.12em;}
@@ -254,8 +257,8 @@
     #angleGraph,#accelGraph{flex:none;height:clamp(80px, 15vh, 160px);}
 
     .link-hub,.link-ctrl{padding:10px 12px;}
-    .hub-qr{width:92px;height:92px;flex-basis:92px;}
-    .hub-qr img,.hub-qr canvas{width:82px !important;height:82px !important;}
+    .hub-qr{width:132px;height:132px;flex-basis:132px;}
+    .hub-qr img,.hub-qr canvas{width:122px !important;height:122px !important;}
     .hub-code{font-size:28px;}
 
     /* right column scrolls on its own if calibration is opened, so the page doesn't */
@@ -421,8 +424,8 @@
        so both charts keep a usable height */
     @media (max-height: 720px){
       .tilt-sense{--lvl:clamp(120px, 19vh, 170px);gap:12px;}
-      .hub-qr{width:72px;height:72px;flex-basis:72px;}
-      .hub-qr img,.hub-qr canvas{width:64px !important;height:64px !important;}
+      .hub-qr{width:112px;height:112px;flex-basis:112px;}
+      .hub-qr img,.hub-qr canvas{width:104px !important;height:104px !important;}
       .hub-code{font-size:22px;}
       .link-hub{gap:12px;padding:8px 10px;}
       .tilt-side{padding-top:20px;gap:8px;}
@@ -1694,6 +1697,40 @@
   }
   var turnCfg = readTurn();
 
+  // Compact form for the join QR (see joinUrl): Cloudflare's hex username and
+  // credential as base64url, joined by '.'. Null for anything else.
+  var CF_TURN_URLS = ['turn:turn.cloudflare.com:3478?transport=udp', 'turn:turn.cloudflare.com:443?transport=udp',
+    'turn:turn.cloudflare.com:3478?transport=tcp', 'turns:turn.cloudflare.com:5349?transport=tcp',
+    'turns:turn.cloudflare.com:443?transport=tcp'];
+  function hexToB64u(h){
+    var s = '';
+    for (var i = 0; i < h.length; i += 2) s += String.fromCharCode(parseInt(h.substr(i, 2), 16));
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64uToHex(b){
+    var s = atob(b.replace(/-/g, '+').replace(/_/g, '/')), h = '';
+    for (var i = 0; i < s.length; i++) h += ('0' + s.charCodeAt(i).toString(16)).slice(-2);
+    return h;
+  }
+  function compactTurn(cfg){
+    if (!cfg) return null;
+    var srv = cfg.iceServers.filter(function(s){
+      return s.username && [].concat(s.urls).some(function(u){ return /turn\.cloudflare\.com/.test(u); });
+    })[0];
+    if (!srv || !/^([0-9a-f]{2})+$/i.test(srv.username) || !/^([0-9a-f]{2})+$/i.test(srv.credential)) return null;
+    return hexToB64u(srv.username) + '.' + hexToB64u(srv.credential);
+  }
+  // Phone: TURN from the join link (in memory only -- every join brings fresh ones).
+  (function(){
+    var t = new URLSearchParams(location.search).get('t');
+    var m = t && /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(t);
+    if (!m) return;
+    try {
+      turnCfg = { iceServers: [{ urls: ['stun:stun.cloudflare.com:3478'] },
+        { urls: CF_TURN_URLS, username: b64uToHex(m[1]), credential: b64uToHex(m[2]) }] };
+    } catch (e) {}
+  })();
+
   // Why a direct (WebRTC) attempt didn't make it, for the status line / log:
   // ICE state plus which candidate types each side gathered -- no "relay"
   // locally means this browser never got a TURN allocation.
@@ -1851,7 +1888,17 @@
   // behind LTE CGNAT) reaches the hub's relay address from its side.
   // &v= is a cache-buster: Pages serves max-age=600, and the room code is
   // reused across reloads, so the same join URL kept opening a stale page.
-  function joinUrl(code){ return location.origin + location.pathname + '?join=' + code + '&v=' + Date.now().toString(36); }
+  // &t= gives the phone TURN too: an LTE phone (carrier CGNAT) never got a
+  // working path with only the hub on TURN. Just Cloudflare's username +
+  // credential, hex packed to base64url (~130 chars), so the QR stays
+  // scannable -- the phone rebuilds Cloudflare's fixed server URLs itself.
+  hubQr.addEventListener('click', function(){ hubQr.classList.toggle('zoom'); });
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape') hubQr.classList.remove('zoom'); });
+
+  function joinUrl(code){
+    var t = compactTurn(turnCfg);
+    return location.origin + location.pathname + '?join=' + code + (t ? '&t=' + t : '') + '&v=' + Date.now().toString(36);
+  }
 
   // Hub: paste / clear TURN credentials. Reload so the room reopens (same
   // code) with the new ICE servers and the QR carries them.
@@ -1920,7 +1967,7 @@
       if (hosted){
         loadScript(QR_URL).then(function(){
           // low error correction = fewest modules = easiest scan off a screen
-          new QRCode(hubQr, { text: url, width: 200, height: 200, colorDark: '#202020', colorLight: '#ffffff',
+          new QRCode(hubQr, { text: url, width: 240, height: 240, colorDark: '#202020', colorLight: '#ffffff',
             correctLevel: QRCode.CorrectLevel.L });
         }).catch(function(){ hubQr.textContent = 'QR unavailable'; });
       } else {
@@ -1946,7 +1993,7 @@
         sendHubState();
         offerCamToPhone();
       });
-      conn.on('data', onPhoneData);
+      conn.on('data', function(msg){ conn.lastRxAt = performance.now(); onPhoneData(msg); });
       conn.on('close', function(){
         if (phoneConn !== conn) return;
         phoneConn = null;
@@ -1991,9 +2038,14 @@
         client.on('message', function(topic, payload){
           var msg;
           try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
-          // a live direct link wins; relay stragglers (e.g. right after the
-          // phone upgraded to direct) must not pull the hub back onto the relay
-          if (phoneConn && phoneConn.open && phoneConn.kind === 'direct') return;
+          // A live direct link (open AND actually delivering) wins: relay
+          // stragglers must not pull the hub back onto the relay. Their tilt
+          // still goes through onPhoneData, whose seq check drops duplicates
+          // -- so a direct link that's open but stalled (ICE disconnected)
+          // can't swallow the samples that are only arriving via the relay.
+          var directLive = phoneConn && phoneConn.open && phoneConn.kind === 'direct' &&
+            performance.now() - (phoneConn.lastRxAt || 0) < 1500;
+          if (directLive){ if (msg.t === 'tilt') onPhoneData(msg); return; }
           relayPhoneSeenAt = performance.now();
           if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone || relayPhone.client !== client){
             // a relayed phone takes over. A direct link still negotiating (ICE
