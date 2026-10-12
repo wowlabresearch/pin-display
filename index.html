@@ -1746,6 +1746,44 @@
       if (m) tr.local[m[1]] = 1;
     });
   }
+  /* ---------- P2P upgrade over the relay ---------- */
+  // PeerJS's public signaling server never delivered an LTE phone's ICE
+  // candidates to the hub, so its direct link always died. The MQTT relay
+  // does get through, so once a phone is on the relay the two sides swap a
+  // complete (non-trickle) offer/answer over it and open their own WebRTC
+  // data channel -- with Cloudflare TURN on both ends that connects even
+  // through carrier CGNAT. It then carries tilt/pins/hub state exactly like a
+  // PeerJS link; the relay stays up underneath (keep-alive, webcam snapshots)
+  // and takes back over if the channel drops.
+  function rtcConfig(){
+    return { iceServers: turnCfg ? turnCfg.iceServers : [{ urls: 'stun:stun.l.google.com:19302' }] };
+  }
+  // full candidate list in one SDP -- the relay is the only signaling we have
+  function gatherAll(pc){
+    return new Promise(function(resolve){
+      if (pc.iceGatheringState === 'complete'){ resolve(); return; }
+      var t = setTimeout(resolve, 4000);  // TURN usually answers in <200ms
+      pc.addEventListener('icegatheringstatechange', function(){
+        if (pc.iceGatheringState === 'complete'){ clearTimeout(t); resolve(); }
+      });
+    });
+  }
+  // Same shape as a PeerJS / relay link (kind, open, send, close).
+  // Unordered + no retransmits: a late tilt sample is worthless.
+  function rtcLink(pc){
+    return {
+      kind: 'rtc', open: false, peerConnection: pc, dc: null,
+      send: function(msg){
+        var dc = this.dc;
+        if (!this.open || !dc || dc.readyState !== 'open') return false;
+        if ((msg.t === 'tilt' || msg.t === 'pins') && dc.bufferedAmount > 16384) return false;
+        dc.send(JSON.stringify(msg));
+        return true;
+      },
+      close: function(){ this.open = false; try { this.peerConnection.close(); } catch (e) {} }
+    };
+  }
+
   function traceText(conn){
     var tr = conn && conn.iceTrace;
     if (!tr) return 'no ICE trace';
@@ -2043,15 +2081,22 @@
           // still goes through onPhoneData, whose seq check drops duplicates
           // -- so a direct link that's open but stalled (ICE disconnected)
           // can't swallow the samples that are only arriving via the relay.
-          var directLive = phoneConn && phoneConn.open && phoneConn.kind === 'direct' &&
+          if (msg.t === 'rtcOffer'){ answerRtc(client, base, msg.sdp); relayPhoneSeenAt = performance.now(); return; }
+          var directLive = phoneConn && phoneConn.open && (phoneConn.kind === 'direct' || phoneConn.kind === 'rtc') &&
             performance.now() - (phoneConn.lastRxAt || 0) < 1500;
-          if (directLive){ if (msg.t === 'tilt') onPhoneData(msg); return; }
+          if (directLive){
+            // keep the relayed side alive under a P2P link (keep-alives, webcam snapshots)
+            if (phoneConn.kind === 'rtc' && relayPhone && relayPhone.client === client) relayPhoneSeenAt = performance.now();
+            if (msg.t === 'tilt') onPhoneData(msg);
+            if (msg.t === 'camAck') onSnapAck(msg.id);
+            return;
+          }
           relayPhoneSeenAt = performance.now();
           if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone || relayPhone.client !== client){
             // a relayed phone takes over. A direct link still negotiating (ICE
             // via TURN can outlast the phone's fallback timer) is left alone
             // so it can still take over once it opens.
-            if (phoneConn && phoneConn !== relayPhone && phoneConn.kind !== 'direct') { try { phoneConn.close(); } catch (e) {} }
+            if (phoneConn && phoneConn !== relayPhone && phoneConn.kind !== 'direct' && phoneConn.kind !== 'rtc') { try { phoneConn.close(); } catch (e) {} }
             relayPhone = relayLink(client, base + '/down', 200);  // pins to phone at ~5Hz
             phoneConn = relayPhone;
             setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
@@ -2065,6 +2110,49 @@
       });
     }).catch(function(){ hubRelay = null; });  // relay unreachable: direct links still work
   }
+  // Hub half of the P2P upgrade (see rtcLink): answer the phone's offer on
+  // the relay it came from; once the channel opens it becomes phoneConn.
+  var hubRtc = null;
+  function answerRtc(client, base, sdp){
+    if (!window.RTCPeerConnection) return;
+    if (hubRtc) hubRtc.close();
+    var pc = new RTCPeerConnection(rtcConfig());
+    var l = hubRtc = rtcLink(pc);
+    trackIce(l);
+    lastDirectConn = l;  // [hub] log shows its ICE story while on the relay
+    pc.ondatachannel = function(e){
+      var dc = l.dc = e.channel;
+      dc.onopen = function(){
+        if (hubRtc !== l){ l.close(); return; }
+        l.open = true;
+        l.lastRxAt = performance.now();
+        phoneConn = l;  // relayPhone stays open underneath for snapshots / fallback
+        setLinkStatus(hubStatus, 'Phone connected · P2P', 'ok');
+        if (currentMode !== 2) selectMode(2);
+        sendHubState();
+        offerCamToPhone();
+      };
+      dc.onmessage = function(ev){
+        var msg;
+        try { msg = JSON.parse(ev.data); } catch (err) { return; }
+        l.lastRxAt = performance.now();
+        if (l.open && phoneConn !== l && phoneConn === relayPhone) phoneConn = l;  // P2P recovered from a stall
+        onPhoneData(msg);
+      };
+      dc.onclose = function(){
+        l.open = false;
+        if (phoneConn === l) phoneConn = relayPhone && relayPhone.open ? relayPhone : null;
+      };
+    };
+    pc.setRemoteDescription({ type: 'offer', sdp: sdp })
+      .then(function(){ return pc.createAnswer(); })
+      .then(function(a){ return pc.setLocalDescription(a); })
+      .then(function(){ return gatherAll(pc); })
+      .then(function(){
+        if (hubRtc === l) client.publish(base + '/down', JSON.stringify({ t: 'rtcAnswer', sdp: pc.localDescription.sdp }));
+      }).catch(function(){});
+  }
+
   // relayed phones have no "close" event -- time them out instead
   setInterval(function(){
     if (relayPhone && relayPhone.open && performance.now() - relayPhoneSeenAt > 5000){
@@ -2127,7 +2215,7 @@
   // and the [hub] log.
   var phoneRoute = '';
   function updatePhoneRoute(){
-    var pc = phoneConn && phoneConn.kind === 'direct' && phoneConn.peerConnection;
+    var pc = phoneConn && (phoneConn.kind === 'direct' || phoneConn.kind === 'rtc') && phoneConn.peerConnection;
     if (!pc || !pc.getStats){ phoneRoute = ''; return; }
     pc.getStats().then(function(stats){
       var selId = null, pairs = {}, cands = {};
@@ -2267,7 +2355,42 @@
       ctrlRelay = client;
       var base = RELAY_TOPIC + code;
       var link = relayLink(client, base + '/up', 40);  // tilt at up to ~25Hz
-      var gotHub = false;
+      var gotHub = false, rtc = null, rtcTries = 0;
+      // P2P upgrade (see rtcLink): offer once the hub has answered on the relay;
+      // a couple of retries if it doesn't open (stays on the relay meanwhile)
+      function startRtc(){
+        if (!window.RTCPeerConnection || attempt !== joinAttempt || ctrlDirectAttempt === attempt) return;
+        if (rtc) rtc.close();
+        if (++rtcTries <= 3) setTimeout(function(){
+          if (rtc && !rtc.open && ctrlConn === link) startRtc();
+        }, 12000);
+        var pc = new RTCPeerConnection(rtcConfig());
+        var l = rtc = rtcLink(pc);
+        trackIce(l);
+        ctrlDirectConn = l;  // status line shows its ICE story while on the relay
+        var dc = l.dc = pc.createDataChannel('pd', { ordered: false, maxRetransmits: 0 });
+        dc.onopen = function(){
+          if (attempt !== joinAttempt || rtc !== l){ l.close(); return; }
+          l.open = true;
+          ctrlConn = l;
+          renderStatus();
+          setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · P2P · tap Start sensor', 'ok');
+        };
+        dc.onmessage = function(e){
+          var msg;
+          try { msg = JSON.parse(e.data); } catch (err) { return; }
+          onHubMsg(msg, code, 'P2P');
+        };
+        dc.onclose = function(){
+          l.open = false;
+          if (ctrlConn === l && link.open){ ctrlConn = link; renderStatus(); }  // back onto the relay
+        };
+        pc.createOffer().then(function(o){ return pc.setLocalDescription(o); })
+          .then(function(){ return gatherAll(pc); })
+          .then(function(){
+            if (rtc === l) client.publish(base + '/up', JSON.stringify({ t: 'rtcOffer', sdp: pc.localDescription.sdp }));
+          }).catch(function(){});
+      }
       client.subscribe(base + '/down');
       client.subscribe(base + '/cam');
       client.on('message', function(topic, payload){
@@ -2279,7 +2402,13 @@
         if (ctrlDirectAttempt === attempt) return;  // direct link took over
         var msg;
         try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
-        if (!gotHub){ gotHub = true; joinedAs(link); }
+        if (msg.t === 'rtcAnswer'){
+          if (rtc && rtc.peerConnection.signalingState === 'have-local-offer')
+            rtc.peerConnection.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(function(){});
+          return;
+        }
+        if (!gotHub){ gotHub = true; joinedAs(link); startRtc(); }
+        if (ctrlConn && ctrlConn.kind === 'rtc' && ctrlConn.open) return;  // P2P carries hub traffic now
         onHubMsg(msg, code, 'RELAY');
       });
       // say hello until the hub answers, then keep-alive so it doesn't time us out
@@ -2385,7 +2514,8 @@
   function offerCamToPhone(){
     renderCamHub();
     if (!camStream || !phoneConn || !phoneConn.open) return;
-    if (phoneConn.kind === 'relay'){
+    // P2P (rtc) links have no PeerJS media call: snapshots go over the relay
+    if (phoneConn.kind === 'relay' || phoneConn.kind === 'rtc'){
       if (!camSnapTimer) camSnapTimer = setInterval(sendSnapshot, 40);
       return;
     }
@@ -2399,7 +2529,7 @@
   }
 
   function sendSnapshot(){
-    if (!camStream || !relayPhone || !relayPhone.open || phoneConn !== relayPhone) return;
+    if (!camStream || !relayPhone || !relayPhone.open || (phoneConn !== relayPhone && !(phoneConn && phoneConn.kind === 'rtc'))) return;
     if (!camPreview.videoWidth) return;
     var now = performance.now(), timeout = snapAckTimeout(), inFlight = 0;
     for (var k in snapPending){ if (now - snapPending[k] > timeout) delete snapPending[k]; else inFlight++; }  // lost -> forget
