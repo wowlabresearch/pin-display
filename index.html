@@ -1697,9 +1697,26 @@
   // Why a direct (WebRTC) attempt didn't make it, for the status line / log:
   // ICE state plus which candidate types each side gathered -- no "relay"
   // locally means this browser never got a TURN allocation.
+  // PeerJS drops conn.peerConnection once a link fails, so record the ICE
+  // story as it happens: state sequence + local candidate types gathered.
+  function trackIce(conn){
+    var pc = conn.peerConnection;
+    if (!pc){ setTimeout(function(){ if (conn.peerConnection && !conn.iceTrace) trackIce(conn); }, 0); return; }
+    var tr = conn.iceTrace = { states: [], local: {} };
+    pc.addEventListener('iceconnectionstatechange', function(){ tr.states.push(pc.iceConnectionState); });
+    pc.addEventListener('icecandidate', function(e){
+      var m = e.candidate && / typ (\w+)/.exec(e.candidate.candidate);
+      if (m) tr.local[m[1]] = 1;
+    });
+  }
+  function traceText(conn){
+    var tr = conn && conn.iceTrace;
+    if (!tr) return 'no ICE trace';
+    return 'closed · ICE ' + (tr.states.join('>') || 'never started') + ' · local ' + (Object.keys(tr.local).join('+') || 'none');
+  }
   function iceSummary(conn, cb){
     var pc = conn && conn.peerConnection;
-    if (!pc || !pc.getStats){ cb('no peer connection'); return; }
+    if (!pc || !pc.getStats){ cb(traceText(conn)); return; }
     pc.getStats().then(function(stats){
       var loc = {}, rem = {};
       stats.forEach(function(s){
@@ -1915,7 +1932,13 @@
       phoneConn = conn;
       lastDirectConn = conn;
       conn.kind = 'direct';
+      trackIce(conn);
       conn.on('open', function(){
+        // opened after the phone fell back to the relay: direct wins
+        if (phoneConn !== conn){
+          if (phoneConn && phoneConn.kind === 'relay') phoneConn.close();
+          phoneConn = conn;
+        }
         setLinkStatus(hubStatus, 'Phone connected · DIRECT', 'ok');
         if (currentMode !== 2) selectMode(2);
         sendHubState();
@@ -1971,8 +1994,10 @@
           if (phoneConn && phoneConn.open && phoneConn.kind === 'direct') return;
           relayPhoneSeenAt = performance.now();
           if (!relayPhone || !relayPhone.open || phoneConn !== relayPhone || relayPhone.client !== client){
-            // a relayed phone takes over, same as a new direct one would
-            if (phoneConn && phoneConn !== relayPhone) { try { phoneConn.close(); } catch (e) {} }
+            // a relayed phone takes over. A direct link still negotiating (ICE
+            // via TURN can outlast the phone's fallback timer) is left alone
+            // so it can still take over once it opens.
+            if (phoneConn && phoneConn !== relayPhone && phoneConn.kind !== 'direct') { try { phoneConn.close(); } catch (e) {} }
             relayPhone = relayLink(client, base + '/down', 200);  // pins to phone at ~5Hz
             phoneConn = relayPhone;
             setLinkStatus(hubStatus, 'Phone connected · RELAY', 'ok');
@@ -2146,6 +2171,7 @@
         conn.kind = 'direct';
         ctrlDirectConn = conn;
         ctrlIceInfo = '';
+        trackIce(conn);
         conn.on('open', function(){
           if (attempt !== joinAttempt) { try { conn.close(); } catch (e) {} return; }
           clearTimeout(directTimer);
