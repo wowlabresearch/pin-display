@@ -187,6 +187,9 @@
   .hub-code{font:500 34px/1 var(--mono);letter-spacing:.12em;}
   .hub-url{color:var(--muted);font:9px var(--mono);word-break:break-all;}
   .hub-status{color:var(--muted);font:10px/1.5 var(--mono);}
+  .turn-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px;}
+  .turn-btn{border:1px solid var(--line);background:transparent;color:var(--muted);font:9px var(--mono);padding:2px 6px;cursor:pointer;}
+  .turn-btn:hover{color:var(--ink);border-color:var(--ink);}
   .hub-status.ok{color:var(--teal);}
   .hub-status.bad{color:var(--coral);}
   .link-ctrl{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);background:#f7f8f4;}
@@ -594,6 +597,11 @@
           <span class="hub-code" id="hubCode">····</span>
           <span class="hub-url" id="hubUrl"></span>
           <span class="hub-status" id="hubStatus">Starting…</span>
+          <span class="turn-row">
+            <span class="hub-url" id="turnStatus">TURN · OFF</span>
+            <button class="turn-btn" id="turnBtn" type="button">Set TURN</button>
+            <button class="turn-btn" id="turnClearBtn" type="button">Clear</button>
+          </span>
         </div>
       </div>
       <div class="link-ctrl" id="ctrlBlock" hidden>
@@ -1666,9 +1674,37 @@
   // Optional dedicated TURN servers (e.g. from metered.ca) for faster direct
   // links across networks; empty = PeerJS defaults.
   var TURN_SERVERS = [];
+  // Cloudflare Realtime TURN credentials ({"exp":unix s,"iceServers":[...]},
+  // from scripts/turn_creds.ps1). Phone on LTE (carrier CGNAT) <-> laptop on
+  // Wi-Fi can't punch a direct path, and PeerJS's own TURN is EU/US UDP-only
+  // -- Cloudflare's anycast TURN (Seoul PoP) keeps that link fast. Never in
+  // this public page's source: pasted once on the laptop (localStorage) and
+  // handed to the phone in the join link's #fragment, which browsers never
+  // send to a server.
+  var TURN_STORE = 'pdTurn';
+  function readTurn(){
+    try {
+      var t = JSON.parse(localStorage.getItem(TURN_STORE) || 'null');
+      if (t && t.iceServers && t.iceServers.length && (!t.exp || t.exp * 1000 > Date.now())) return t;
+    } catch (e) {}
+    return null;
+  }
+  function saveTurn(t){
+    try { if (t) localStorage.setItem(TURN_STORE, JSON.stringify(t)); else localStorage.removeItem(TURN_STORE); } catch (e) {}
+  }
+  function encodeTurn(t){ return btoa(JSON.stringify(t)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+  function decodeTurn(s){ return JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/'))); }
+  (function(){  // phone: take credentials from #turn=... and tidy the URL
+    var m = location.hash.match(/turn=([A-Za-z0-9_-]+)/);
+    if (!m) return;
+    try { var t = decodeTurn(m[1]); if (t && t.iceServers) saveTurn(t); } catch (e) {}
+    history.replaceState(null, '', location.pathname + location.search);
+  })();
+  var turnCfg = readTurn();
   function peerOpts(){
     var o = { debug: 1 };
-    if (TURN_SERVERS.length) o.config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }].concat(TURN_SERVERS) };
+    if (turnCfg) o.config = { iceServers: turnCfg.iceServers };
+    else if (TURN_SERVERS.length) o.config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }].concat(TURN_SERVERS) };
     return o;
   }
 
@@ -1767,7 +1803,38 @@
     return s;
   }
 
-  function joinUrl(code){ return location.origin + location.pathname + '?join=' + code; }
+  function joinUrl(code){
+    return location.origin + location.pathname + '?join=' + code + (turnCfg ? '#turn=' + encodeTurn(turnCfg) : '');
+  }
+
+  // Hub: paste / clear TURN credentials. Reload so the room reopens (same
+  // code) with the new ICE servers and the QR carries them.
+  function renderTurnRow(){
+    if (!turnCfg){ turnStatusEl.textContent = 'TURN · OFF (LTE phones fall back to the slow relay)'; turnBtn.textContent = 'Set TURN'; return; }
+    var d = turnCfg.exp ? new Date(turnCfg.exp * 1000) : null;
+    turnStatusEl.textContent = 'TURN · ON' + (d ? ' · until ' + d.toLocaleDateString() : '');
+    turnBtn.textContent = 'Change TURN';
+  }
+  var turnStatusEl = document.getElementById('turnStatus');
+  var turnBtn = document.getElementById('turnBtn');
+  var turnClearBtn = document.getElementById('turnClearBtn');
+  turnBtn.addEventListener('click', function(){
+    var raw = prompt('Paste the JSON from scripts/turn_creds.ps1 (it is on your clipboard):');
+    if (!raw) return;
+    var t;
+    try { t = JSON.parse(raw); } catch (e) { alert('Not valid JSON'); return; }
+    if (Array.isArray(t)) t = { iceServers: t };
+    if (!t || !Array.isArray(t.iceServers) || !t.iceServers.length){ alert('No iceServers in that JSON'); return; }
+    if (t.exp && t.exp * 1000 <= Date.now()){ alert('Those credentials have already expired'); return; }
+    saveTurn(t);
+    location.reload();
+  });
+  turnClearBtn.addEventListener('click', function(){
+    if (!turnCfg || !confirm('Remove the TURN credentials from this browser?')) return;
+    saveTurn(null);
+    location.reload();
+  });
+  renderTurnRow();
 
   function startHub(){
     if (hubPeer) return;
@@ -1929,15 +1996,42 @@
     if (!phoneConn || !phoneConn.open || !linkRx && !linkLate) return;
     var sent = lastSeq - seqFirst;
     console.log('[hub] sent=' + (seqOwner ? sent : '?') + ' rx=' + linkRx + ' lost=' + linkLost +
-      ' late=' + linkLate + ' maxGap=' + Math.round(linkMaxGap) + 'ms via ' + (phoneConn.kind || '?').toUpperCase());
+      ' late=' + linkLate + ' maxGap=' + Math.round(linkMaxGap) + 'ms via ' + phoneVia());
     seqFirst = lastSeq;
     linkRx = linkLost = linkLate = 0;
     linkMaxGap = 0;
   }, 2000);
+  // Which path the phone's WebRTC link actually took: DIRECT (peer to peer)
+  // or TURN (through Cloudflare), plus its round trip -- for the status line
+  // and the [hub] log.
+  var phoneRoute = '';
+  function updatePhoneRoute(){
+    var pc = phoneConn && phoneConn.kind === 'direct' && phoneConn.peerConnection;
+    if (!pc || !pc.getStats){ phoneRoute = ''; return; }
+    pc.getStats().then(function(stats){
+      var selId = null, pairs = {}, cands = {};
+      stats.forEach(function(s){
+        if (s.type === 'transport' && s.selectedCandidatePairId) selId = s.selectedCandidatePairId;
+        if (s.type === 'candidate-pair') pairs[s.id] = s;
+        if (s.type === 'local-candidate' || s.type === 'remote-candidate') cands[s.id] = s;
+      });
+      var pair = selId && pairs[selId];
+      if (!pair) return;
+      var l = cands[pair.localCandidateId], r = cands[pair.remoteCandidateId];
+      var turn = (l && l.candidateType === 'relay') || (r && r.candidateType === 'relay');
+      var rtt = pair.currentRoundTripTime ? Math.round(pair.currentRoundTripTime * 1000) : 0;
+      phoneRoute = (turn ? 'TURN' : 'DIRECT') + (rtt ? ' ~' + rtt + 'ms' : '');
+    }).catch(function(){});
+  }
+  function phoneVia(){
+    return phoneConn.kind === 'relay' ? 'RELAY' : (phoneRoute || 'DIRECT');
+  }
+
   setInterval(function(){
     phoneRate = phoneMsgs; phoneMsgs = 0;
+    updatePhoneRoute();
     if (phoneConn && phoneConn.open){
-      var via = phoneConn.kind === 'relay' ? ' · RELAY' : ' · DIRECT';
+      var via = ' · ' + phoneVia();
       setLinkStatus(hubStatus, phoneRate ? 'Phone streaming · ' + phoneRate + ' Hz → ESP32' + via :
         'Phone connected' + via + ' · tap Start sensor on the phone', 'ok');
     }
