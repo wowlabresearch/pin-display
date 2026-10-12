@@ -2147,11 +2147,25 @@
       };
       dc.onclose = function(){
         l.open = false;
-        if (phoneConn === l) phoneConn = relayPhone && relayPhone.open ? relayPhone : null;
+        if (phoneConn === l){
+          phoneConn = relayPhone && relayPhone.open ? relayPhone : null;
+          offerCamToPhone();  // back to relay snapshots
+        }
       };
     };
     pc.setRemoteDescription({ type: 'offer', sdp: sdp })
-      .then(function(){ return pc.createAnswer(); })
+      .then(function(){
+        // the phone's offer carries a recvonly video slot: answer it sendonly
+        // so the webcam can be dropped in (and out) later with replaceTrack,
+        // no renegotiation -- real WebRTC video over the same TURN path
+        pc.getTransceivers().forEach(function(tr){
+          if (tr.receiver && tr.receiver.track && tr.receiver.track.kind === 'video' && !l.videoSender){
+            tr.direction = 'sendonly';
+            l.videoSender = tr.sender;
+          }
+        });
+        return pc.createAnswer();
+      })
       .then(function(a){ return pc.setLocalDescription(a); })
       .then(function(){ return gatherAll(pc); })
       .then(function(){
@@ -2375,6 +2389,17 @@
         trackIce(l);
         ctrlDirectConn = l;  // status line shows its ICE story while on the relay
         var dc = l.dc = pc.createDataChannel('pd', { ordered: false, maxRetransmits: 0 });
+        // receive-only video slot: the hub drops its webcam in with replaceTrack.
+        // The remote track stays muted until frames actually flow, so LIVE VIEW
+        // follows unmute/mute (webcam on/off on the laptop).
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.ontrack = function(e){
+          var track = e.track, stream = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([track]);
+          function show(){ if (rtc === l){ showCamVideo(stream); tuneLowLatency(l); } }
+          track.onunmute = show;
+          track.onmute = function(){ if (camVideo.srcObject === stream) hideCam(); };
+          if (!track.muted) show();
+        };
         dc.onopen = function(){
           if (attempt !== joinAttempt || rtc !== l){ l.close(); return; }
           l.open = true;
@@ -2389,6 +2414,8 @@
         };
         dc.onclose = function(){
           l.open = false;
+          var s = camVideo.srcObject;
+          if (s && l.peerConnection.getReceivers().some(function(r){ return r.track && s.getTracks().indexOf(r.track) >= 0; })) hideCam();
           if (ctrlConn === l && link.open){ ctrlConn = link; renderStatus(); }  // back onto the relay
         };
         pc.createOffer().then(function(o){ return pc.setLocalDescription(o); })
@@ -2515,15 +2542,39 @@
     camStream = null;
     camPreview.srcObject = null;
     if (camCall){ try { camCall.close(); } catch (e) {} camCall = null; camCalledConn = null; }
+    if (hubRtc) setRtcCam(hubRtc);  // empty the P2P video slot (phone hides LIVE VIEW)
     clearInterval(camSnapTimer); camSnapTimer = null;
     renderCamHub();
   }
   camBtn.addEventListener('click', function(){ if (vdoId) stopVdo(); if (camStream) stopCam(); else startCam(); });
 
+  // Webcam into (or out of) a P2P link's video slot. Low-latency encoding:
+  // capped bitrate so a weak LTE downlink doesn't queue frames, and keep the
+  // frame rate over resolution when bandwidth drops (it's moving pins).
+  function setRtcCam(l){
+    if (!l || !l.videoSender) return false;
+    var track = camStream ? camStream.getVideoTracks()[0] : null;
+    l.videoSender.replaceTrack(track || null).catch(function(){});
+    try {
+      var p = l.videoSender.getParameters();
+      if (p.encodings && p.encodings.length){
+        p.encodings[0].maxBitrate = 1200000;
+        p.encodings[0].maxFramerate = 30;
+        p.degradationPreference = 'maintain-framerate';
+        l.videoSender.setParameters(p).catch(function(){});
+      }
+    } catch (e) {}
+    return true;
+  }
+
   // Send the webcam to whichever phone is connected now, by its path.
   function offerCamToPhone(){
     renderCamHub();
     if (!camStream || !phoneConn || !phoneConn.open) return;
+    if (phoneConn.kind === 'rtc' && setRtcCam(phoneConn)){
+      clearInterval(camSnapTimer); camSnapTimer = null;  // real video replaces snapshots
+      return;
+    }
     // P2P (rtc) links have no PeerJS media call: snapshots go over the relay
     if (phoneConn.kind === 'relay' || phoneConn.kind === 'rtc'){
       if (!camSnapTimer) camSnapTimer = setInterval(sendSnapshot, 40);
