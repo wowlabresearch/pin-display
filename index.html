@@ -600,6 +600,7 @@
           <span class="turn-row">
             <span class="hub-url" id="turnStatus">TURN · OFF</span>
             <button class="turn-btn" id="turnBtn" type="button">Set TURN</button>
+            <button class="turn-btn" id="turnTestBtn" type="button">Test</button>
             <button class="turn-btn" id="turnClearBtn" type="button">Clear</button>
           </span>
         </div>
@@ -1701,6 +1702,40 @@
     history.replaceState(null, '', location.pathname + location.search);
   })();
   var turnCfg = readTurn();
+
+  // Why a direct (WebRTC) attempt didn't make it, for the status line / log:
+  // ICE state plus which candidate types each side gathered -- no "relay"
+  // locally means this browser never got a TURN allocation.
+  function iceSummary(conn, cb){
+    var pc = conn && conn.peerConnection;
+    if (!pc || !pc.getStats){ cb('no peer connection'); return; }
+    pc.getStats().then(function(stats){
+      var loc = {}, rem = {};
+      stats.forEach(function(s){
+        if (s.type === 'local-candidate') loc[s.candidateType] = 1;
+        if (s.type === 'remote-candidate') rem[s.candidateType] = 1;
+      });
+      cb('ICE ' + pc.iceConnectionState + ' · local ' + (Object.keys(loc).join('+') || 'none') +
+        ' · remote ' + (Object.keys(rem).join('+') || 'none'));
+    }).catch(function(){ cb('ICE ' + pc.iceConnectionState); });
+  }
+
+  // Can this browser get a TURN allocation at all? Relay-only ICE gathering
+  // against the stored credentials: a "relay" candidate = TURN works here.
+  function testTurn(done){
+    if (!turnCfg){ done('no TURN credentials set'); return; }
+    var pc, finished = false, t0 = performance.now();
+    function finish(msg){ if (finished) return; finished = true; try { pc.close(); } catch (e) {} done(msg); }
+    try { pc = new RTCPeerConnection({ iceServers: turnCfg.iceServers, iceTransportPolicy: 'relay' }); }
+    catch (e){ done('RTCPeerConnection rejected the config: ' + e.message); return; }
+    pc.createDataChannel('turntest');
+    pc.onicecandidate = function(e){
+      if (e.candidate && / typ relay /.test(e.candidate.candidate)) finish('OK · relay in ' + Math.round(performance.now() - t0) + 'ms');
+    };
+    pc.onicegatheringstatechange = function(){ if (pc.iceGatheringState === 'complete') finish('FAILED · no relay candidate (credentials expired/wrong, or UDP+TCP to Cloudflare blocked)'); };
+    pc.createOffer().then(function(o){ return pc.setLocalDescription(o); }).catch(function(e){ finish('FAILED · ' + e.message); });
+    setTimeout(function(){ finish('FAILED · timed out (8s)'); }, 8000);
+  }
   function peerOpts(){
     var o = { debug: 1 };
     if (turnCfg) o.config = { iceServers: turnCfg.iceServers };
@@ -1829,6 +1864,14 @@
     saveTurn(t);
     location.reload();
   });
+  document.getElementById('turnTestBtn').addEventListener('click', function(){
+    turnStatusEl.textContent = 'TURN · testing…';
+    testTurn(function(msg){
+      renderTurnRow();
+      turnStatusEl.textContent += ' · test: ' + msg;
+      console.log('[turn] test: ' + msg);
+    });
+  });
   turnClearBtn.addEventListener('click', function(){
     if (!turnCfg || !confirm('Remove the TURN credentials from this browser?')) return;
     saveTurn(null);
@@ -1876,6 +1919,7 @@
       // One controller at a time -- a new phone replaces the old one.
       if (phoneConn && phoneConn !== conn) { try { phoneConn.close(); } catch (e) {} }
       phoneConn = conn;
+      lastDirectConn = conn;
       conn.kind = 'direct';
       conn.on('open', function(){
         setLinkStatus(hubStatus, 'Phone connected · DIRECT', 'ok');
@@ -1969,7 +2013,7 @@
   // [tilt] line: sent = samples the phone sent (from its seq), rx = arrived
   // here, lost = never arrived, late = arrived after a newer one (dropped),
   // maxGap = longest silence between arrivals.
-  var seqOwner = null, lastSeq = 0, seqFirst = 0;
+  var seqOwner = null, lastSeq = 0, seqFirst = 0, lastDirectConn = null;
   var linkRx = 0, linkLost = 0, linkLate = 0, linkMaxGap = 0, linkLastAt = 0;
   function onPhoneData(msg){
     if (!msg || msg.t !== 'tilt') return;
@@ -1995,8 +2039,12 @@
   setInterval(function(){
     if (!phoneConn || !phoneConn.open || !linkRx && !linkLate) return;
     var sent = lastSeq - seqFirst;
-    console.log('[hub] sent=' + (seqOwner ? sent : '?') + ' rx=' + linkRx + ' lost=' + linkLost +
-      ' late=' + linkLate + ' maxGap=' + Math.round(linkMaxGap) + 'ms via ' + phoneVia());
+    var line = '[hub] sent=' + (seqOwner ? sent : '?') + ' rx=' + linkRx + ' lost=' + linkLost +
+      ' late=' + linkLate + ' maxGap=' + Math.round(linkMaxGap) + 'ms via ' + phoneVia() +
+      ' turn=' + (turnCfg ? 'on' : 'off');
+    // on the relay: say why the phone's direct attempt (if any) didn't connect
+    if (phoneConn.kind === 'relay' && lastDirectConn) iceSummary(lastDirectConn, function(s){ console.log(line + ' | direct: ' + s); });
+    else console.log(line + (phoneConn.kind === 'relay' ? ' | direct: never attempted' : ''));
     seqFirst = lastSeq;
     linkRx = linkLost = linkLate = 0;
     linkMaxGap = 0;
@@ -2040,6 +2088,11 @@
   // Controller side: join the laptop's room -- direct WebRTC first, relay if
   // that can't connect (different networks behind strict NAT/firewalls).
   var ctrlRelay = null, joinAttempt = 0, lastHubMsgAt = 0;
+  // the direct attempt behind a relay fallback, and why it didn't connect
+  var ctrlDirectConn = null, ctrlIceInfo = '';
+  setInterval(function(){
+    if (ctrlConn && ctrlConn.kind === 'relay' && ctrlDirectConn) iceSummary(ctrlDirectConn, function(s){ ctrlIceInfo = s; });
+  }, 2000);
   var ctrlDirectAttempt = 0;  // join attempt whose direct link won -- relay stands down
 
   function onHubMsg(msg, code, via){
@@ -2052,7 +2105,9 @@
     if (msg.mirror !== undefined && !!msg.mirror !== camMirror){ camMirror = !!msg.mirror; applyMirror(); }
     showVdo(msg.vdo || '');
     setLinkStatus(ctrlStatus, 'Linked to laptop ' + code + ' · ' + via +
-      (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link'), hubEspLinked ? 'ok' : 'bad');
+      (hubEspLinked ? ' · ESP32 online' : ' · laptop has no ESP32 link') +
+      (via === 'RELAY' ? ' · TURN ' + (turnCfg ? 'on' : 'off') + (ctrlIceInfo ? ' · direct: ' + ctrlIceInfo : '') : ''),
+      hubEspLinked ? 'ok' : 'bad');
     renderStatus();
   }
 
@@ -2095,6 +2150,8 @@
         // pass straight through and the hub discards stale ones by seq.
         var conn = peer.connect(PEER_PREFIX + code, { reliable: false });
         conn.kind = 'direct';
+        ctrlDirectConn = conn;
+        ctrlIceInfo = '';
         conn.on('open', function(){
           if (attempt !== joinAttempt) { try { conn.close(); } catch (e) {} return; }
           clearTimeout(directTimer);
